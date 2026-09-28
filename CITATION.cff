@@ -4,6 +4,7 @@ title: "GeoTrust+: artifact for 'Insider attacks as betweenness capture in mobil
 version: 1.0.0
 date-released: 2026-09-27
 license: MIT
+repository-code: "https://github.com/amrcs2014-pixel/geotrust-plus"
 authors:
   - family-names: "[Surname]"
     given-names: "[Given name]"
