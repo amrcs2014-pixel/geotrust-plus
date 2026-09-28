@@ -1,0 +1,16 @@
+{
+  "title": "GeoTrust+: code, data and ns-3 patches for \"Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone swarms\"",
+  "upload_type": "software",
+  "version": "1.0.0",
+  "description": "<p>Artifact for the paper <em>Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone swarms</em>. It contains a round-based UWB swarm simulator (Python/PyTorch) with DS-TWR ranging, insider and PHY attacks, the GeoTrust+ verification (reciprocity graph with one-sided blame, loss clamp, kinematic gate, TESLA) and an overhearing watchdog applied to RFC 3626 OLSR; a faithful re-implementation of ranging-integrated MPR selection (GRR, Zhou et al., Computer Networks 289, 2026); all 30-seed result tables, ablation and threshold-sensitivity runs; an ns-3.48 OLSR patch with a scenario for link-spoofing, wormhole and distance-lying insiders and the resulting CSVs; and a Cortex-M4F port of the kernels with QEMU measurements. README.md maps every table and figure to its data file and script.</p>",
+  "creators": [
+    {"name": "[Surname], [Given name]", "affiliation": "[Affiliation]"}
+  ],
+  "keywords": ["UWB swarm ranging", "OLSR", "multi-point relay", "secure routing", "insider attacks", "watchdog", "drones", "ns-3", "TESLA"],
+  "license": "MIT",
+  "access_right": "open",
+  "related_identifiers": [
+    {"relation": "references", "identifier": "10.1016/j.comnet.2026.112648", "scheme": "doi", "resource_type": "publication-article"}
+  ],
+  "notes": "ns-3 patch: GPL-2.0-only (derived from ns-3). Data and figures under eval/: CC BY 4.0. tiny-AES-c: Unlicense."
+}

@@ -1,0 +1,15 @@
+  29296	    536	  41664	  71496	  11748	bench_hw.elf
+GEOTRUST-HW clock_hz=168000000 flash_ws=0 timer=SysTick
+KERNEL timer_overhead         cycles_med=0 min=0 max=6 us=0.0 check=0
+KERNEL cmac8_229B             cycles_med=76344 min=76344 max=76350 us=454.4 check=1
+KERNEL reciprocity_n12        cycles_med=2131 min=1887 max=2607 us=12.7 check=1
+KERNEL kin_clamp_wd_n12       cycles_med=12595 min=10577 max=14006 us=75.0 check=0
+KERNEL round_total_n12        cycles_med=930474 min=928123 max=930974 us=5538.5 check=0
+KERNEL reciprocity_n20        cycles_med=6309 min=5339 max=8488 us=37.6 check=2
+KERNEL kin_clamp_wd_n20       cycles_med=34309 min=29029 max=37833 us=204.2 check=0
+KERNEL round_total_n20        cycles_med=1566882 min=1566120 max=1568084 us=9326.7 check=0
+KERNEL reciprocity_n30        cycles_med=15649 min=13119 max=19684 us=93.1 check=3
+KERNEL kin_clamp_wd_n30       cycles_med=80636 min=74648 max=86886 us=480.0 check=0
+KERNEL round_total_n30        cycles_med=2385792 min=2378221 max=2388625 us=14201.1 check=0
+KERNEL rgrr_n20_k25_f0        cycles_med=102987 min=82749 max=124921 us=613.0 check=0
+DONE

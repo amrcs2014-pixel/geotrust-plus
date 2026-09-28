@@ -1,0 +1,763 @@
+diff --git a/src/olsr/model/olsr-routing-protocol.cc b/src/olsr/model/olsr-routing-protocol.cc
+index 6d86643fb..cc5332fd7 100644
+--- a/src/olsr/model/olsr-routing-protocol.cc
++++ b/src/olsr/model/olsr-routing-protocol.cc
+@@ -26,6 +26,7 @@
+ #include "olsr-repositories.h"
+ 
+ #include "ns3/boolean.h"
++#include "ns3/double.h"
+ #include "ns3/enum.h"
+ #include "ns3/inet-socket-address.h"
+ #include "ns3/ipv4-header.h"
+@@ -41,8 +42,13 @@
+ #include "ns3/udp-socket-factory.h"
+ #include "ns3/uinteger.h"
+ 
++#include <cmath>
++#include <functional>
+ #include <iomanip>
+ #include <iostream>
++#include <numeric>
++#include <queue>
++#include <set>
+ 
+ /********** Useful macros **********/
+ 
+@@ -178,6 +184,67 @@ NS_OBJECT_ENSURE_REGISTERED(RoutingProtocol);
+ /* see https://www.iana.org/assignments/service-names-port-numbers */
+ const uint16_t RoutingProtocol::OLSR_PORT_NUMBER = 698;
+ 
++std::function<double(Ipv4Address, Ipv4Address)> RoutingProtocol::s_linkCost;
++
++void
++RoutingProtocol::SetLinkCostFunction(std::function<double(Ipv4Address, Ipv4Address)> f)
++{
++    s_linkCost = std::move(f);
++}
++
++std::function<void(Ipv4Address, Ipv4Address, Ipv4Address, uint32_t)> RoutingProtocol::s_sendHook;
++std::function<void(Ipv4Address, uint32_t, bool)> RoutingProtocol::s_forwardHook;
++std::vector<Ipv4Address> RoutingProtocol::s_allAddresses;
++std::function<bool(Ipv4Address, Ipv4Address)> RoutingProtocol::s_quarantine;
++
++std::function<double(Ipv4Address, Ipv4Address, Ipv4Address)> RoutingProtocol::s_grrPlr;
++
++void
++RoutingProtocol::SetGrrPlrFunction(std::function<double(Ipv4Address, Ipv4Address, Ipv4Address)> f)
++{
++    s_grrPlr = std::move(f);
++}
++
++void
++RoutingProtocol::SetQuarantineFunction(std::function<bool(Ipv4Address, Ipv4Address)> f)
++{
++    s_quarantine = std::move(f);
++}
++
++void
++RoutingProtocol::SetDataHooks(std::function<void(Ipv4Address, Ipv4Address, Ipv4Address, uint32_t)> s,
++                              std::function<void(Ipv4Address, uint32_t, bool)> f)
++{
++    s_sendHook = std::move(s);
++    s_forwardHook = std::move(f);
++}
++
++void
++RoutingProtocol::SetAllAddresses(std::vector<Ipv4Address> all)
++{
++    s_allAddresses = std::move(all);
++}
++
++// GeoTrust+ patch: exclusion predicate (verifier, neighbour) and adaptive robustness f(verifier)
++std::function<std::vector<Ipv4Address>(Ipv4Address)> RoutingProtocol::s_helloLies;
++
++void
++RoutingProtocol::SetHelloLiesFunction(std::function<std::vector<Ipv4Address>(Ipv4Address)> f)
++{
++    s_helloLies = std::move(f);
++}
++
++std::function<bool(Ipv4Address, Ipv4Address)> RoutingProtocol::s_mprExclude;
++std::function<uint32_t(Ipv4Address)> RoutingProtocol::s_robustF;
++
++void
++RoutingProtocol::SetGeoTrustFunctions(std::function<bool(Ipv4Address, Ipv4Address)> exclude,
++                                      std::function<uint32_t(Ipv4Address)> robustF)
++{
++    s_mprExclude = std::move(exclude);
++    s_robustF = std::move(robustF);
++}
++
+ TypeId
+ RoutingProtocol::GetTypeId()
+ {
+@@ -220,6 +287,51 @@ RoutingProtocol::GetTypeId()
+                                           "high",
+                                           Willingness::ALWAYS,
+                                           "always"))
++            .AddAttribute("AttackDropProb",
++                          "RangeGuard patch: probability of silently dropping transit data "
++                          "(1 = blackhole, 0.3-0.6 = grayhole).",
++                          DoubleValue(0.0),
++                          MakeDoubleAccessor(&RoutingProtocol::m_attackDropProb),
++                          MakeDoubleChecker<double>(0.0, 1.0))
++            .AddAttribute("AttackClaimAll",
++                          "RangeGuard patch: HELLOs claim every node as a symmetric neighbour.",
++                          BooleanValue(false),
++                          MakeBooleanAccessor(&RoutingProtocol::m_attackClaimAll),
++                          MakeBooleanChecker())
++            .AddAttribute("MprMode",
++                          "RangeGuard GRR patch: 0 = RFC 3626 MPR heuristic, 1 = greedy round-robin "
++                          "(GRR) link-quality-constrained MPR selection (Zhou et al. 2026).",
++                          UintegerValue(0),
++                          MakeUintegerAccessor(&RoutingProtocol::m_mprMode),
++                          MakeUintegerChecker<uint32_t>(0, 3))
++            .AddAttribute("GrrQmin",
++                          "GeoTrust+ patch: 0 = Q_min is the two-hop PLR through all relays, "
++                          "1 = Q_min is the best single-relay two-hop PLR.",
++                          UintegerValue(0),
++                          MakeUintegerAccessor(&RoutingProtocol::m_grrQmin),
++                          MakeUintegerChecker<uint32_t>(0, 1))
++            .AddAttribute("GrrGamma",
++                          "RangeGuard GRR patch: gain factor gamma of the two-hop PLR upper bound.",
++                          DoubleValue(1.2),
++                          MakeDoubleAccessor(&RoutingProtocol::m_grrGamma),
++                          MakeDoubleChecker<double>(1.0))
++            .AddAttribute("GrrAbsTarget",
++                          "RangeGuard GRR patch: if > 0, bound the two-hop PLR by max(gamma * Q_min, target) "
++                          "instead of min(gamma * Q_min, 1) (absolute QoS target variant).",
++                          DoubleValue(0.0),
++                          MakeDoubleAccessor(&RoutingProtocol::m_grrAbs),
++                          MakeDoubleChecker<double>(0.0, 1.0))
++            .AddAttribute("AttackDropControl",
++                          "RangeGuard GRR patch: never retransmit OLSR control messages as an MPR.",
++                          BooleanValue(false),
++                          MakeBooleanAccessor(&RoutingProtocol::m_attackDropControl),
++                          MakeBooleanChecker())
++            .AddAttribute("LinkQualityAware",
++                          "RangeGuard patch: compute routes by minimum summed link cost "
++                          "(Dijkstra, cost from SetLinkCostFunction) instead of hop count.",
++                          BooleanValue(false),
++                          MakeBooleanAccessor(&RoutingProtocol::m_linkQualityAware),
++                          MakeBooleanChecker())
+             .AddTraceSource("Rx",
+                             "Receive OLSR packet.",
+                             MakeTraceSourceAccessor(&RoutingProtocol::m_rxPacketTrace),
+@@ -695,6 +807,296 @@ CoverTwoHopNeighbors(Ipv4Address neighborMainAddr, TwoHopNeighborSet& N2)
+ }
+ } // unnamed namespace
+ 
++MprSet
++RoutingProtocol::RobustMprSet(const NeighborSet& N, const TwoHopNeighborSet& N2)
++{
++    // GeoTrust+ patch: lazy greedy on the submodular G_f(S) = sum_{|F|<=f} sum_u min(T_Fu, sum_{S\F} c)
++    // (f <= 1), same contributions/targets as GrrMprSet (Zhou Alg. 1), excluded neighbours removed,
++    // followed by reverse-delete pruning.  f comes from s_robustF (adaptive robustness).
++    MprSet S;
++    std::vector<Ipv4Address> g1, g2;
++    for (const auto& nb : N)
++    {
++        if (nb.willingness != Willingness::NEVER &&
++            !(s_mprExclude && s_mprExclude(m_mainAddress, nb.neighborMainAddr)))
++        {
++            g1.push_back(nb.neighborMainAddr);
++        }
++    }
++    for (const auto& t : N2)
++    {
++        if (std::find(g2.begin(), g2.end(), t.twoHopNeighborAddr) == g2.end())
++        {
++            g2.push_back(t.twoHopNeighborAddr);
++        }
++    }
++    if (g1.empty() || g2.empty())
++    {
++        return S;
++    }
++    const size_t n1 = g1.size(), k = g2.size();
++    auto clampP = [](double p) { return std::min(1.0, std::max(0.0, p)); };
++    std::vector<double> pu(n1);
++    for (size_t j = 0; j < n1; j++)
++    {
++        pu[j] = clampP(s_grrPlr(m_mainAddress, m_mainAddress, g1[j]));
++    }
++    std::vector<std::vector<double>> C(n1, std::vector<double>(k, 0.0));
++    for (const auto& t : N2)
++    {
++        size_t i = std::find(g2.begin(), g2.end(), t.twoHopNeighborAddr) - g2.begin();
++        size_t j = std::find(g1.begin(), g1.end(), t.neighborMainAddr) - g1.begin();
++        if (j == n1)
++        {
++            continue;
++        }
++        double pw = clampP(s_grrPlr(m_mainAddress, t.neighborMainAddr, t.twoHopNeighborAddr));
++        C[j][i] = std::max(C[j][i], -std::log(std::max(1e-9, pu[j] + (1.0 - pu[j]) * pw)));
++    }
++    uint32_t f = s_robustF ? std::min<uint32_t>(1, s_robustF(m_mainAddress)) : 0;
++    const size_t nF = f ? n1 + 1 : 1; // F = {} and F = {v}
++    std::vector<double> t(k), T(nF * k), cur(nF * k, 0.0);
++    for (size_t i = 0; i < k; i++)
++    {
++        double s = 0.0, mx = 0.0;
++        for (size_t j = 0; j < n1; j++)
++        {
++            s += C[j][i];
++            mx = std::max(mx, C[j][i]);
++        }
++        t[i] = std::max(0.0, (m_grrQmin == 1 ? mx : s) - std::log(m_grrGamma));
++    }
++    double goal = 0.0;
++    for (size_t F = 0; F < nF; F++)
++    {
++        for (size_t i = 0; i < k; i++)
++        {
++            double s = 0.0;
++            for (size_t j = 0; j < n1; j++)
++            {
++                if (F == 0 || j != F - 1)
++                {
++                    s += C[j][i];
++                }
++            }
++            T[F * k + i] = std::min(t[i], s);
++            goal += T[F * k + i];
++        }
++    }
++    auto gain = [&](size_t x) {
++        double g = 0.0;
++        for (size_t F = 0; F < nF; F++)
++        {
++            if (F && F - 1 == x)
++            {
++                continue;
++            }
++            for (size_t i = 0; i < k; i++)
++            {
++                double c0 = cur[F * k + i], tt = T[F * k + i];
++                if (c0 < tt)
++                {
++                    g += std::min(tt, c0 + C[x][i]) - c0;
++                }
++            }
++        }
++        return g;
++    };
++    std::vector<char> in(n1, 0);
++    std::vector<double> ub(n1, 1e300);
++    std::vector<size_t> sel;
++    double have = 0.0;
++    while (goal - have > 1e-7 * (goal + 1.0))
++    {
++        int best = -1;
++        for (;;)
++        {
++            int x = -1;
++            double top = -1.0, second = -1.0;
++            for (size_t y = 0; y < n1; y++)
++            {
++                if (in[y])
++                {
++                    continue;
++                }
++                if (ub[y] > top)
++                {
++                    second = top;
++                    top = ub[y];
++                    x = int(y);
++                }
++                else if (ub[y] > second)
++                {
++                    second = ub[y];
++                }
++            }
++            if (x < 0 || top <= 1e-12)
++            {
++                break;
++            }
++            ub[x] = gain(size_t(x));
++            if (ub[x] >= second)
++            {
++                if (ub[x] > 1e-12)
++                {
++                    best = x;
++                }
++                break;
++            }
++        }
++        if (best < 0)
++        {
++            break;
++        }
++        in[best] = 1;
++        sel.push_back(size_t(best));
++        have = 0.0;
++        for (size_t F = 0; F < nF; F++)
++        {
++            for (size_t i = 0; i < k; i++)
++            {
++                if (!(F && F - 1 == size_t(best)))
++                {
++                    cur[F * k + i] += C[best][i];
++                }
++                have += std::min(cur[F * k + i], T[F * k + i]);
++            }
++        }
++    }
++    for (int q = int(sel.size()) - 1; q >= 0; q--) // reverse-delete
++    {
++        size_t x = sel[q];
++        bool ok = true;
++        for (size_t F = 0; F < nF && ok; F++)
++        {
++            for (size_t i = 0; i < k && ok; i++)
++            {
++                double s = 0.0;
++                for (size_t v : sel)
++                {
++                    if (v != x && !(F && F - 1 == v))
++                    {
++                        s += C[v][i];
++                    }
++                }
++                ok = s >= T[F * k + i] - 1e-7;
++            }
++        }
++        if (ok)
++        {
++            sel.erase(sel.begin() + q);
++        }
++    }
++    for (size_t v : sel)
++    {
++        S.insert(g1[v]);
++    }
++    return S;
++}
++
++MprSet
++RoutingProtocol::GrrMprSet(const NeighborSet& N, const TwoHopNeighborSet& N2)
++{
++    // RangeGuard GRR patch: Zhou et al. (2026), Algorithm 1. Contribution of one-hop neighbour w to two-hop
++    // neighbour v: C[v][w] = -ln(P_uw + (1 - P_uw) P_wv) (0 if w does not reach v); target
++    // t_v = max(0, sum_w C[v][w] - ln gamma), i.e. the log form of prod_S(.) <= min(gamma * Q_min_v, 1).
++    MprSet S;
++    std::vector<Ipv4Address> g1;
++    for (const auto& nb : N)
++    {
++        if (nb.willingness != Willingness::NEVER)
++        {
++            g1.push_back(nb.neighborMainAddr);
++        }
++    }
++    std::vector<Ipv4Address> g2;
++    for (const auto& t : N2)
++    {
++        if (std::find(g2.begin(), g2.end(), t.twoHopNeighborAddr) == g2.end())
++        {
++            g2.push_back(t.twoHopNeighborAddr);
++        }
++    }
++    if (g1.empty() || g2.empty())
++    {
++        return S;
++    }
++    const size_t n1 = g1.size(), k = g2.size();
++    auto clampP = [](double p) { return std::min(1.0, std::max(0.0, p)); };
++    std::vector<double> pu(n1);
++    for (size_t j = 0; j < n1; j++)
++    {
++        pu[j] = clampP(s_grrPlr(m_mainAddress, m_mainAddress, g1[j]));
++    }
++    std::vector<std::vector<double>> C(k, std::vector<double>(n1, 0.0));
++    for (const auto& t : N2)
++    {
++        size_t i = std::find(g2.begin(), g2.end(), t.twoHopNeighborAddr) - g2.begin();
++        size_t j = std::find(g1.begin(), g1.end(), t.neighborMainAddr) - g1.begin();
++        if (j == n1)
++        {
++            continue;
++        }
++        double pw = clampP(s_grrPlr(m_mainAddress, t.neighborMainAddr, t.twoHopNeighborAddr));
++        double term = std::max(1e-9, pu[j] + (1.0 - pu[j]) * pw);
++        C[i][j] = std::max(C[i][j], -std::log(term));
++    }
++    std::vector<double> tgt(k);
++    std::vector<std::vector<size_t>> R(k);
++    for (size_t i = 0; i < k; i++)
++    {
++        double s = 0.0, mx = 0.0;
++        for (size_t j = 0; j < n1; j++)
++        {
++            s += C[i][j];
++            mx = std::max(mx, C[i][j]);
++        }
++        // GeoTrust+ patch: GrrQmin 0 = Q_min over all relays (RangeGuard port), 1 = best single relay
++        tgt[i] = std::max(0.0, (m_grrQmin == 1 ? mx : s) - std::log(m_grrGamma));
++        if (m_grrAbs > 0.0)
++        {
++            tgt[i] = std::min(tgt[i], -std::log(m_grrAbs)); // absolute-target variant: max(gamma Q_min, target)
++        }
++        R[i].resize(n1);
++        std::iota(R[i].begin(), R[i].end(), size_t(0));
++        std::stable_sort(R[i].begin(), R[i].end(), [&](size_t a, size_t b) { return C[i][a] > C[i][b]; });
++    }
++    std::vector<char> in(n1, 0);
++    std::vector<double> acc(k, 0.0);
++    auto satisfied = [&]() {
++        for (size_t i = 0; i < k; i++)
++        {
++            if (acc[i] + 1e-9 < tgt[i])
++            {
++                return false;
++            }
++        }
++        return true;
++    };
++    for (size_t r = 0; r < n1; r++)
++    {
++        for (size_t i = 0; i < k; i++)
++        {
++            size_t j = R[i][r];
++            if (in[j] || C[i][j] <= 0.0)
++            {
++                continue;
++            }
++            in[j] = 1;
++            S.insert(g1[j]);
++            for (size_t q = 0; q < k; q++)
++            {
++                acc[q] += C[q][j];
++            }
++            if (satisfied())
++            {
++                return S;
++            }
++        }
++    }
++    return S;
++}
++
+ void
+ RoutingProtocol::MprComputation()
+ {
+@@ -712,6 +1114,12 @@ RoutingProtocol::MprComputation()
+     {
+         if (neighbor->status == NeighborTuple::STATUS_SYM) // I think that we need this check
+         {
++            // GeoTrust+ patch (MprMode 3): RFC 3626 heuristic over the neighbours this node has not
++            // convicted (verification / watchdog); two-hop nodes reachable only via them drop out below
++            if (m_mprMode == 3 && s_mprExclude && s_mprExclude(m_mainAddress, neighbor->neighborMainAddr))
++            {
++                continue;
++            }
+             N.push_back(*neighbor);
+         }
+     }
+@@ -787,6 +1195,17 @@ RoutingProtocol::MprComputation()
+     }
+ #endif // NS3_LOG_ENABLE
+ 
++    if (m_mprMode == 1 && s_grrPlr)
++    {
++        m_state.SetMprSet(GrrMprSet(N, N2)); // RangeGuard GRR patch
++        return;
++    }
++    if (m_mprMode == 2 && s_grrPlr)
++    {
++        m_state.SetMprSet(RobustMprSet(N, N2)); // GeoTrust+ patch
++        return;
++    }
++
+     // 1. Start with an MPR set made of all members of N with
+     // N_willingness equal to Willingness::ALWAYS
+     for (auto neighbor = N.begin(); neighbor != N.end(); neighbor++)
+@@ -991,6 +1410,99 @@ RoutingProtocol::GetMainAddress(Ipv4Address iface_addr) const
+     }
+ }
+ 
++void
++RoutingProtocol::ComputeDijkstraRoutes()
++{
++    // RangeGuard patch: minimum-cost routes over the same information OLSR already holds
++    // (symmetric neighbours, 2-hop tuples, topology tuples); only the metric changes.
++    struct Best
++    {
++        double cost;
++        Ipv4Address next;
++        Ipv4Address iface;
++        uint32_t hops;
++    };
++    using QItem = std::pair<double, Ipv4Address>;
++    auto cmp = [](const QItem& a, const QItem& b) { return a.first > b.first; };
++    std::priority_queue<QItem, std::vector<QItem>, decltype(cmp)> pq(cmp);
++    std::map<Ipv4Address, Best> best;
++    std::multimap<Ipv4Address, Ipv4Address> edges;
++
++    auto quarantined = [this](const Ipv4Address& a) {
++        return s_quarantine && s_quarantine(m_mainAddress, a);
++    };
++    for (const auto& nb : m_state.GetNeighbors())
++    {
++        if (nb.status != NeighborTuple::STATUS_SYM || quarantined(nb.neighborMainAddr))
++        {
++            continue;
++        }
++        const LinkTuple* lt = nullptr;
++        for (const auto& l : m_state.GetLinks())
++        {
++            if (GetMainAddress(l.neighborIfaceAddr) == nb.neighborMainAddr &&
++                l.time >= Simulator::Now())
++            {
++                lt = &l;
++                break;
++            }
++        }
++        if (!lt)
++        {
++            continue;
++        }
++        double c = s_linkCost(m_mainAddress, nb.neighborMainAddr);
++        best[nb.neighborMainAddr] = Best{c, lt->neighborIfaceAddr, lt->localIfaceAddr, 1};
++        pq.push({c, nb.neighborMainAddr});
++    }
++    for (const auto& t2 : m_state.GetTwoHopNeighbors())
++    {
++        if (t2.twoHopNeighborAddr != m_mainAddress)
++        {
++            edges.insert({t2.neighborMainAddr, t2.twoHopNeighborAddr});
++        }
++    }
++    for (const auto& tp : m_state.GetTopologySet())
++    {
++        if (tp.destAddr != m_mainAddress)
++        {
++            edges.insert({tp.lastAddr, tp.destAddr});
++        }
++    }
++
++    std::set<Ipv4Address> done;
++    while (!pq.empty())
++    {
++        auto [d, u] = pq.top();
++        pq.pop();
++        if (!done.insert(u).second)
++        {
++            continue;
++        }
++        Best bu = best[u];
++        auto range = edges.equal_range(u);
++        for (auto it = range.first; it != range.second; ++it)
++        {
++            const Ipv4Address& v = it->second;
++            if (v == m_mainAddress || done.count(v) || quarantined(v))
++            {
++                continue;
++            }
++            double nd = d + s_linkCost(u, v);
++            auto f = best.find(v);
++            if (f == best.end() || nd < f->second.cost - 1e-12)
++            {
++                best[v] = Best{nd, bu.next, bu.iface, bu.hops + 1};
++                pq.push({nd, v});
++            }
++        }
++    }
++    for (const auto& [dest, b] : best)
++    {
++        AddEntry(dest, b.next, b.iface, b.hops);
++    }
++}
++
+ void
+ RoutingProtocol::RoutingTableComputation()
+ {
+@@ -1000,6 +1512,13 @@ RoutingProtocol::RoutingTableComputation()
+     // 1. All the entries from the routing table are removed.
+     Clear();
+ 
++    if (m_linkQualityAware && s_linkCost)
++    {
++        ComputeDijkstraRoutes();
++    }
++    else
++    {
++
+     // 2. The new routing entries are added starting with the
+     // symmetric neighbors (h=1) as the destination nodes.
+     const NeighborSet& neighborSet = m_state.GetNeighbors();
+@@ -1189,6 +1708,8 @@ RoutingProtocol::RoutingTableComputation()
+         }
+     }
+ 
++    } // end of hop-count (standard) route computation
++
+     // 4. For each entry in the multiple interface association base
+     // where there exists a routing entry such that:
+     // R_dest_addr == I_main_addr (of the multiple interface association entry)
+@@ -1598,7 +2119,7 @@ RoutingProtocol::ForwardDefault(olsr::MessageHeader olsrMessage,
+     {
+         const MprSelectorTuple* mprselTuple =
+             m_state.FindMprSelectorTuple(GetMainAddress(senderAddress));
+-        if (mprselTuple != nullptr)
++        if (mprselTuple != nullptr && !m_attackDropControl) // GRR patch: compromised MPR drops TCs
+         {
+             olsrMessage.SetTimeToLive(olsrMessage.GetTimeToLive() - 1);
+             olsrMessage.SetHopCount(olsrMessage.GetHopCount() + 1);
+@@ -1808,6 +2329,35 @@ RoutingProtocol::SendHello()
+ 
+         linkMessages.push_back(linkMessage);
+     }
++    if (m_attackClaimAll && !s_allAddresses.empty())
++    {
++        // RangeGuard patch (blackhole/grayhole): claim to be a symmetric neighbour of everyone so
++        // that receivers pick this node as MPR / next hop.
++        olsr::MessageHeader::Hello::LinkMessage claim;
++        claim.linkCode = (static_cast<uint8_t>(LinkType::SYM_LINK) & 0x03) |
++                         ((static_cast<uint8_t>(NeighborType::SYM_NEIGH) << 2) & 0x0f);
++        for (const auto& a : s_allAddresses)
++        {
++            if (a != m_mainAddress)
++            {
++                claim.neighborInterfaceAddresses.push_back(a);
++            }
++        }
++        linkMessages.push_back(claim);
++    }
++    if (s_helloLies)
++    {
++        // GeoTrust+ patch: selective neighbour-list lies (fake links, wormhole, stealth, adaptive liar)
++        std::vector<Ipv4Address> fake = s_helloLies(m_mainAddress);
++        if (!fake.empty())
++        {
++            olsr::MessageHeader::Hello::LinkMessage lie;
++            lie.linkCode = (static_cast<uint8_t>(LinkType::SYM_LINK) & 0x03) |
++                           ((static_cast<uint8_t>(NeighborType::SYM_NEIGH) << 2) & 0x0f);
++            lie.neighborInterfaceAddresses = fake;
++            linkMessages.push_back(lie);
++        }
++    }
+     NS_LOG_DEBUG("OLSR HELLO message size: " << int(msg.GetSerializedSize()) << " (with "
+                                              << int(linkMessages.size()) << " link messages)");
+     QueueMessage(msg, JITTER);
+@@ -2911,6 +3461,10 @@ RoutingProtocol::RouteOutput(Ptr<Packet> p,
+                                        << rtentry->GetSource() << " and output dev "
+                                        << rtentry->GetOutputDevice());
+         found = true;
++        if (s_sendHook && p) // RangeGuard patch: watchdog bookkeeping for locally generated data
++        {
++            s_sendHook(m_mainAddress, entry2.nextAddr, header.GetDestination(), p->GetUid());
++        }
+     }
+     else
+     {
+@@ -3018,6 +3572,21 @@ RoutingProtocol::RouteInput(Ptr<const Packet> p,
+                                   << header.GetDestination() << " --> nextHop=" << entry2.nextAddr
+                                   << " interface=" << entry2.interface);
+ 
++        // RangeGuard patch: blackhole/grayhole drop + watchdog hooks
++        bool attackDrop =
++            m_attackDropProb > 0.0 && m_uniformRandomVariable->GetValue() < m_attackDropProb;
++        if (s_forwardHook)
++        {
++            s_forwardHook(m_mainAddress, p->GetUid(), !attackDrop);
++        }
++        if (attackDrop)
++        {
++            return true; // consumed silently
++        }
++        if (s_sendHook)
++        {
++            s_sendHook(m_mainAddress, entry2.nextAddr, header.GetDestination(), p->GetUid());
++        }
+         ucb(rtentry, p, header);
+         return true;
+     }
+diff --git a/src/olsr/model/olsr-routing-protocol.h b/src/olsr/model/olsr-routing-protocol.h
+index 7461979ce..93e695ce3 100644
+--- a/src/olsr/model/olsr-routing-protocol.h
++++ b/src/olsr/model/olsr-routing-protocol.h
+@@ -28,6 +28,7 @@
+ #include "ns3/timer.h"
+ #include "ns3/traced-callback.h"
+ 
++#include <functional>
+ #include <map>
+ #include <vector>
+ 
+@@ -86,6 +87,46 @@ class RoutingProtocol : public Ipv4RoutingProtocol
+      */
+     static TypeId GetTypeId();
+ 
++    /**
++     * RangeGuard research patch. Per-link cost oracle (a -> b, both main addresses) used when the
++     * LinkQualityAware attribute is true: routes then minimise the summed link cost (Dijkstra)
++     * instead of the hop count. The oracle stands for what UWB ranging + PLR prediction, carried in
++     * the TC messages, would provide to every node.
++     */
++    static void SetLinkCostFunction(std::function<double(Ipv4Address, Ipv4Address)> f);
++
++    /**
++     * RangeGuard research patch: data-plane observation hooks used to emulate a watchdog.
++     * sendHook(me, nextHop, finalDst, packetUid): this node handed a data packet to nextHop.
++     * forwardHook(me, packetUid, forwarded): this node received a packet to forward and either
++     * forwarded it or (attack) silently dropped it.
++     */
++    static void SetDataHooks(std::function<void(Ipv4Address, Ipv4Address, Ipv4Address, uint32_t)> s,
++                             std::function<void(Ipv4Address, uint32_t, bool)> f);
++
++    /** Addresses a "claim-all" attacker advertises as its symmetric neighbours in HELLOs. */
++    static void SetAllAddresses(std::vector<Ipv4Address> all);
++
++    /**
++     * RangeGuard research patch: quarantine predicate (me, other). When set, the cost-based route
++     * computation never uses a node that `me` has quarantined, neither as next hop nor as relay.
++     */
++    static void SetQuarantineFunction(std::function<bool(Ipv4Address, Ipv4Address)> f);
++
++    /**
++     * RangeGuard GRR patch: PLR oracle plr(observer, from, to) for GRR MPR selection. from == observer: the
++     * observer's own estimate of its link to `to`; otherwise the PLR that `from` advertises for from -> to.
++     */
++    static void SetGrrPlrFunction(std::function<double(Ipv4Address, Ipv4Address, Ipv4Address)> f);
++
++    /** GeoTrust+ patch: MprMode 2 = robust lazy greedy; exclusion predicate and adaptive f. */
++    static void SetGeoTrustFunctions(std::function<bool(Ipv4Address, Ipv4Address)> exclude,
++                                     std::function<uint32_t(Ipv4Address)> robustF);
++
++    /** GeoTrust+ patch: extra (fake) symmetric neighbours an insider advertises in its HELLOs. */
++    static void SetHelloLiesFunction(std::function<std::vector<Ipv4Address>(Ipv4Address)> f);
++    static std::function<std::vector<Ipv4Address>(Ipv4Address)> s_helloLies; //!< GeoTrust+ patch.
++
+     RoutingProtocol();
+     ~RoutingProtocol() override;
+ 
+@@ -251,6 +292,28 @@ class RoutingProtocol : public Ipv4RoutingProtocol
+     Time m_hnaInterval;        //!< HNA messages' emission interval.
+     Willingness m_willingness; //!< Willingness for forwarding packets on behalf of other nodes.
+ 
++    bool m_linkQualityAware{false}; //!< RangeGuard patch: cost-based (Dijkstra) route computation.
++    static std::function<double(Ipv4Address, Ipv4Address)> s_linkCost; //!< RangeGuard patch.
++    void ComputeDijkstraRoutes();                                      //!< RangeGuard patch.
++    double m_attackDropProb{0.0};     //!< RangeGuard patch: drop probability of transit data.
++    bool m_attackClaimAll{false};     //!< RangeGuard patch: advertise every node as a neighbour.
++    static std::function<void(Ipv4Address, Ipv4Address, Ipv4Address, uint32_t)> s_sendHook;
++    static std::function<void(Ipv4Address, uint32_t, bool)> s_forwardHook;
++    static std::vector<Ipv4Address> s_allAddresses;
++    static std::function<bool(Ipv4Address, Ipv4Address)> s_quarantine;
++    static std::function<double(Ipv4Address, Ipv4Address, Ipv4Address)> s_grrPlr; //!< GRR patch.
++    uint32_t m_mprMode{0};            //!< GRR patch: 0 = RFC 3626 heuristic, 1 = GRR.
++    double m_grrGamma{1.2};           //!< GRR patch: gain factor of the two-hop PLR bound.
++    double m_grrAbs{0.0};             //!< GRR patch: absolute two-hop PLR target (0 = paper's bound).
++    uint32_t m_grrQmin{0};            //!< GeoTrust+ patch: 0 = Q_min over all relays, 1 = best single relay.
++    bool m_attackDropControl{false};  //!< GRR patch: compromised MPR does not forward control traffic.
++    /** GRR patch: GRR MPR selection over the filtered N (symmetric neighbours) and N2 sets. */
++    MprSet GrrMprSet(const NeighborSet& N, const TwoHopNeighborSet& N2);
++    /** GeoTrust+ patch: robust (f <= 1) lazy-greedy MPR selection with exclusions. */
++    MprSet RobustMprSet(const NeighborSet& N, const TwoHopNeighborSet& N2);
++    static std::function<bool(Ipv4Address, Ipv4Address)> s_mprExclude; //!< GeoTrust+ patch.
++    static std::function<uint32_t(Ipv4Address)> s_robustF;            //!< GeoTrust+ patch.
++
+     OlsrState m_state; //!< Internal state with all needed data structs.
+     Ptr<Ipv4> m_ipv4;  //!< IPv4 object the routing is linked to.
+ 

@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this artifact, please cite the paper and the artifact."
+title: "GeoTrust+: artifact for 'Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone swarms'"
+version: 1.0.0
+date-released: 2026-09-27
+license: MIT
+authors:
+  - family-names: "[Surname]"
+    given-names: "[Given name]"
+    affiliation: "[Affiliation]"
+keywords:
+  - UWB swarm ranging
+  - OLSR
+  - secure routing
+  - insider attacks
+  - ns-3
+preferred-citation:
+  type: article
+  title: "Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone swarms"
+  authors:
+    - family-names: "[Surname]"
+      given-names: "[Given name]"
+  year: 2026
+  journal: "Applied Network Science (submitted)"

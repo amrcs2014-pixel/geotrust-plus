@@ -1,0 +1,61 @@
+{
+ "platform": "STM32F405 (Cortex-M4F @168 MHz) emulated by QEMU 6.2 netduinoplus2, -icount shift=0",
+ "method": "instruction counts via SysTick under icount (calibrated with a 2-insn loop); time = insn x CPI / 168 MHz, CPI range 1.0-1.5 assumed (QEMU is not cycle-accurate) - confirm with DWT->CYCCNT on a NUCLEO-F405RG",
+ "footprint_bytes": {
+  "text_geotrust_kernels": 2484,
+  "text_aes": 1735,
+  "bss_static_workspace": 12672
+ },
+ "kernels": {
+  "cm_tuple": {
+   "instructions": 13887,
+   "us_cpi1.0": 82.7,
+   "us_cpi1.5": 124.0
+  },
+  "rgrr_n12_k10_f0": {
+   "instructions": 26815,
+   "us_cpi1.0": 159.6,
+   "us_cpi1.5": 239.4
+  },
+  "rgrr_n12_k10_f1": {
+   "instructions": 311978,
+   "us_cpi1.0": 1857.0,
+   "us_cpi1.5": 2785.5
+  },
+  "rgrr_n20_k25_f0": {
+   "instructions": 105052,
+   "us_cpi1.0": 625.3,
+   "us_cpi1.5": 938.0
+  },
+  "rgrr_n20_k25_f1": {
+   "instructions": 2289924,
+   "us_cpi1.0": 13630.5,
+   "us_cpi1.5": 20445.8
+  },
+  "rgrr_n30_k40_f0": {
+   "instructions": 294799,
+   "us_cpi1.0": 1754.8,
+   "us_cpi1.5": 2632.1
+  },
+  "rgrr_n30_k40_f1": {
+   "instructions": 7519614,
+   "us_cpi1.0": 44759.6,
+   "us_cpi1.5": 67139.4
+  },
+  "cmac8_229B": {
+   "instructions": 76338,
+   "us_cpi1.0": 454.4,
+   "us_cpi1.5": 681.6
+  }
+ },
+ "per_round_budget_100ms": {
+  "RGRR f=1 (n=20,k=25) run at TC interval 500 ms": "2.7-4.1 % CPU",
+  "RGRR f=0 (n=20,k=25) every 100 ms": "0.63-0.94 ms",
+  "CMAC verify 20 RUs / 100 ms (tiny-AES, no tables)": "9.1-13.6 ms",
+  "CM with a 64-tuple/round budget": "5.3-7.9 ms"
+ },
+ "checks": {
+  "RFC4493_example2": "070a16b4 (pass)",
+  "lazy_greedy_equals_plain_greedy": "same relay-set sizes on all 6 instances"
+ }
+}

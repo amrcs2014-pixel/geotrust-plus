@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+embedded/*.o
+embedded/*.elf
+embedded/*.bin
+embedded/hw_log_*.txt
+eval/results/parts*/
+eval/results/*_base.parquet
+*.aux
+*.log

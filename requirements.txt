@@ -1,0 +1,8 @@
+numpy>=2.0
+scipy>=1.11
+pandas>=2.1
+pyarrow>=14
+matplotlib>=3.8
+torch>=2.2
+cryptography>=41
+pytest>=7
