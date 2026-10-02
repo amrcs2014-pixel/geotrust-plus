@@ -4,6 +4,14 @@ title: "GeoTrust+: artifact for 'Insider attacks as betweenness capture in mobil
 version: 1.0.1
 date-released: 2026-10-03
 license: MIT
+doi: 10.5281/zenodo.23112411
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.23112411
+    description: All versions (Zenodo concept DOI)
+  - type: doi
+    value: 10.5281/zenodo.23112412
+    description: Version 1.0.1
 repository-code: "https://github.com/amrcs2014-pixel/geotrust-plus"
 authors:
   - alias: "amrcs2014-pixel"

@@ -1,5 +1,7 @@
 # GeoTrust+: ranging evidence for robust routing in UWB swarms
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23112411.svg)](https://doi.org/10.5281/zenodo.23112411)
+
 Code, data and ns-3 patches for the paper
 
 > **Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone
@@ -121,4 +123,4 @@ that the patch applied to the `ns-3.48` tag reproduces the patched sources byte 
 
 ## Citation
 
-See `CITATION.cff`. Please cite the paper and the archived version of this repository (Zenodo DOI).
+See `CITATION.cff`. Please cite the paper and the archived version of this repository: Zenodo, doi:10.5281/zenodo.23112412 (version 1.0.1); all versions: doi:10.5281/zenodo.23112411.
