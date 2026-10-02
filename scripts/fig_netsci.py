@@ -28,7 +28,7 @@ for k, reg in enumerate(("sparse", "dense")):
     a.set_ylim(0.5, 1.0); a.set_title(f"({'bc'[k]}) {reg} swarm", fontsize=8); a.set_ylabel("end-to-end delivery")
 ax[0].plot([0, 0.5], [0, 0.5], "k--", lw=.7)
 ax[0].set_xlabel("fraction of honest flows routed via an insider"); ax[0].set_ylabel("delivery loss")
-ax[0].set_title("(a) loss vs. route capture", fontsize=8); ax[0].legend(fontsize=6, frameon=False, loc="upper left")
+ax[0].set_title("(a) loss vs. route capture", fontsize=8); ax[0].legend(fontsize=6, frameon=False, loc="lower right", bbox_to_anchor=(1.04, -0.03), handletextpad=0.1, borderaxespad=0.2)
 fig.tight_layout()
 fig.savefig("eval/figures/fig_netsci.pdf"); fig.savefig("eval/figures/fig_netsci.png", dpi=200)
 print("ok")

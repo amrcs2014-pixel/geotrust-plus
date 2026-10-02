@@ -4,7 +4,7 @@ Code, data and ns-3 patches for the paper
 
 > **Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone
 > swarms**
-> [Authors], submitted to *Applied Network Science*, 2026.
+> Manuscript under review, 2026.
 
 Swarms of drones and robots form mobile spatial networks. Their routing protocols, such as OLSR (RFC 3626), compute paths
 on the topology that agents *advertise*, so insiders can falsify it to attract and drop traffic. The paper shows three
@@ -64,6 +64,7 @@ with `PYTHONPATH=.`):
 | Network structure (RGG vs Erdos-Renyi, auditability, churn) | `netsci_structure.csv` | `netsci_structure.py` | same script |
 | Betweenness capture and targeted placement | `grid_net_sparse.parquet`, `grid_net_dense.parquet` | `fig_netsci.py` | `run_grid.py --regime net_sparse --seeds 20` / `net_dense` |
 | ns-3 lie attacks | `ns3_lies.csv`, `ns3_lies_f20.csv` | `ns3_lies_analysis.py` | `ns3/geo_campaign5.sh` |
+| PLOS ONE figure files (Fig1-6.tif: Arial, 8-12 pt, 300 dpi, LZW) | as above | `plos_figs.py` | - |
 | ns-3 network topology (appendix) | `ns3_topo_shrink_*_s3.csv` | `fig_ns3_topology.py shrink 3 [--paper]` | `ns3/geo_topo.sh shrink 3` |
 | Supplementary ns-3 link-spoofing campaign | `ns3_rfc*.csv` | `ns3_rfc_analysis.py` | `ns3/geo_campaign4.sh` |
 | MCU cost | `embedded/qemu_hw_test.txt` | `embedded/parse_hw.py` | `embedded/build_hw.sh --qemu` |
@@ -112,6 +113,11 @@ that the patch applied to the `ns-3.48` tag reproduces the patched sources byte 
 - The ns-3 patch modifies GPL-2.0 ns-3 sources and is therefore GPL-2.0-only.
 - Data and figures (`eval/`): CC BY 4.0.
 - tiny-AES-c: Unlicense.
+
+## Changes
+
+- **v1.0.1**: legends of `fig_zhou_diag`, `fig_sensitivity` and `fig_netsci` moved off the data (figures regenerated); `scripts/plos_figs.py` and the PLOS ONE figure files in `eval/figures/plos/`; citation metadata completed. No change to code paths, data or results.
+- **v1.0.0**: first release.
 
 ## Citation
 

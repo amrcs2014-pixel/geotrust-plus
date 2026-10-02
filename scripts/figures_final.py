@@ -78,7 +78,8 @@ def zhou_diag(fname):
     for ax in axs:
         ax.set_xticks(range(3), [x[2] for x in meths], fontsize=7)
     axs[0].set_ylabel("relays per node |S|"); axs[1].set_ylabel("end-to-end PDR (no quarantine)")
-    axs[1].set_ylim(0.6, 1.0); axs[1].legend(frameon=False, fontsize=7)
+    axs[1].set_ylim(0.6, 1.0)
+    axs[1].legend(frameon=False, fontsize=7, ncol=2, loc="lower center", bbox_to_anchor=(0.5, 1.0))
     fig.tight_layout(); fig.savefig(f"{FIG}/{fname}.png", dpi=200); fig.savefig(f"{FIG}/{fname}.pdf"); plt.close(fig)
 
 

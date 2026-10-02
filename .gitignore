@@ -10,3 +10,4 @@ eval/results/parts*/
 eval/results/*_base.parquet
 *.aux
 *.log
+eval/figures/plos/src/

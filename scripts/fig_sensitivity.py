@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 from scipy import stats
 
 SRC = {"sparse": "eval/results/grid_sens_sparse.parquet", "dense": "eval/results/grid_sens_dense.parquet"}
-fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.3))
+fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.6))
 for reg, path in SRC.items():
     d = pd.read_parquet(path)
     d = d[(d.factor == "tau_scale") | (d.factor == "main")].copy()
@@ -23,7 +23,8 @@ for reg, path in SRC.items():
 for a, t in zip(ax, ("end-to-end delivery", "honest exclusion", "liars convicted")):
     a.set_xscale("log", base=2); a.set_xticks([0.5, 1, 2, 4]); a.set_xticklabels(["0.5", "1", "2", "4"])
     a.set_xlabel(r"threshold scale $\tau/\tau_{\rm cal}$"); a.set_title(t, fontsize=9); a.grid(alpha=.3)
-ax[0].legend(fontsize=6, loc="lower right")
-fig.tight_layout()
+h, l = ax[0].get_legend_handles_labels()
+fig.legend(h, l, loc="upper center", ncol=4, fontsize=6, frameon=False)
+fig.tight_layout(rect=(0, 0, 1, 0.9))
 fig.savefig("eval/figures/fig_sensitivity.pdf"); fig.savefig("eval/figures/fig_sensitivity.png", dpi=160)
 print("ok")
