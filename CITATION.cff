@@ -14,7 +14,10 @@ identifiers:
     description: Version 1.0.1
 repository-code: "https://github.com/amrcs2014-pixel/geotrust-plus"
 authors:
-  - alias: "amrcs2014-pixel"
+  - family-names: "Abdelhaliem"
+    given-names: "Amr H."
+    affiliation: "Department of Cyber Security, Faculty of Science and Information Technology, Irbid National University, Irbid, Jordan"
+    alias: "amrcs2014-pixel"
 keywords:
   - spatial networks
   - betweenness centrality
@@ -28,6 +31,7 @@ preferred-citation:
   type: article
   title: "Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone swarms"
   authors:
-    - alias: "amrcs2014-pixel"
+    - family-names: "Abdelhaliem"
+      given-names: "Amr H."
   year: 2026
   journal: "Manuscript under review"

@@ -6,7 +6,7 @@ Code, data and ns-3 patches for the paper
 
 > **Insider attacks as betweenness capture in mobile spatial networks: ranging evidence for robust routing in UWB drone
 > swarms**
-> Manuscript under review, 2026.
+> Amr H. Abdelhaliem, manuscript under review, 2026.
 
 Swarms of drones and robots form mobile spatial networks. Their routing protocols, such as OLSR (RFC 3626), compute paths
 on the topology that agents *advertise*, so insiders can falsify it to attract and drop traffic. The paper shows three
