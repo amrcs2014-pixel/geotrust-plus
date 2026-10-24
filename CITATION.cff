@@ -10,6 +10,9 @@ identifiers:
     value: 10.5281/zenodo.23112411
     description: All versions (Zenodo concept DOI)
   - type: doi
+    value: 10.5281/zenodo.23612853
+    description: Version 1.1.0
+  - type: doi
     value: 10.5281/zenodo.23112412
     description: Version 1.0.1
 repository-code: "https://github.com/amrcs2014-pixel/geotrust-plus"

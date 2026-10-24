@@ -138,4 +138,4 @@ that the patch applied to the `ns-3.48` tag reproduces the patched sources byte 
 
 ## Citation
 
-See `CITATION.cff`. Please cite the paper and the archived version of this repository: Zenodo, doi:10.5281/zenodo.23112412 (version 1.0.1); all versions: doi:10.5281/zenodo.23112411.
+See `CITATION.cff`. Please cite the paper and the archived version of this repository: Zenodo, doi:10.5281/zenodo.23612853 (version 1.1.0); all versions: doi:10.5281/zenodo.23112411.
