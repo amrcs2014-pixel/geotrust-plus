@@ -6,6 +6,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
 
+OBS = os.environ.get("GT_OBS", "ru")      # "ru": faithful observation model (default) | "ideal": v1 campaigns
 FIG = "eval/figures"
 os.makedirs(FIG, exist_ok=True)
 STYLE = {"OLSR": ("#2a78d6", "o", "OLSR (RFC 3626)"), "TOPO-OLSR": ("#eb6834", "s", "OLSR + topology check"),
@@ -84,7 +85,8 @@ def zhou_diag(fname):
 
 
 if __name__ == "__main__":
-    sp, de = seedlevel("eval/results/grid_rfc.parquet"), seedlevel("eval/results/grid_rfcdense.parquet")
+    sp, de = (seedlevel("eval/results/grid_ru_sparse.parquet"), seedlevel("eval/results/grid_ru_dense.parquet")) \
+        if OBS == "ru" else (seedlevel("eval/results/grid_rfc.parquet"), seedlevel("eval/results/grid_rfcdense.parquet"))
     attack_bars(de, "fig_rfc_attacks_dense", "dense")
     attack_bars(sp, "fig_rfc_attacks_sparse", "sparse")
     frac_plot(sp, de, "fig_rfc_fraction")

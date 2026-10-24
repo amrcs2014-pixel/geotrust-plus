@@ -1,5 +1,6 @@
 """Ablation and threshold-sensitivity analysis for the expanded paper (reads per-job part files)."""
-import glob
+import glob, os
+OBS = os.environ.get("GT_OBS", "ru")      # "ru": faithful observation model (default) | "ideal": v1 campaigns
 import numpy as np, pandas as pd
 from scipy import stats
 
@@ -25,7 +26,7 @@ def paired(s, fa, le, a, b, k="e2e_q"):
 
 
 ABL = ["OLSR", "TOPO-OLSR", "OLSR-W", "OLSR-V", "OLSR-GnoAuth", "OLSR-Gweak", "OLSR-G"]
-for reg in ("abl_sparse", "abl_dense"):
+for reg in (("abl_ru_sparse", "abl_ru_dense") if OBS == "ru" else ("abl_sparse", "abl_dense")):
     s = load(reg)
     if s is None:
         continue
@@ -41,7 +42,7 @@ for reg in ("abl_sparse", "abl_dense"):
             row.append(f"{b}:{d:+.3f}({p:.1e})")
         print("  ".join(row))
 
-for reg in ("sens_sparse", "sens_dense"):
+for reg in (("sens_ru_sparse", "sens_ru_dense") if OBS == "ru" else ("sens_sparse", "sens_dense")):
     s = load(reg)
     if s is None:
         continue

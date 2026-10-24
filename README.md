@@ -41,7 +41,7 @@ alt="ns-3 topology snapshot under OLSR, OLSR + watchdog and OLSR + GeoTrust+"></
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt                   # a CUDA build of torch is optional; CPU works
-python -m pytest -q tests                         # 9 tests
+python -m pytest -q tests                         # 21 tests
 PYTHONPATH=. python scripts/quickcheck.py         # one seed, main sparse configuration (seconds on a GPU)
 ```
 
@@ -60,12 +60,18 @@ with `PYTHONPATH=.`):
 |---|---|---|---|
 | Critique of ranging-integrated relay selection | `grid_zhou.parquet` | `zhou_analysis.py`, `figures_final.py` | `run_grid.py --regime zhou` |
 | Critique in ns-3 (GRR vs RFC 3626) | `ns3_qall_full.csv` | `ns3_critique_analysis.py` | `ns3/geo_campaign3.sh` |
-| Main results, attacks, insider fraction, robustness | `grid_rfc.parquet`, `grid_rfcdense.parquet` (+ `_wilcoxon.csv`) | `rfc_analysis.py <file>`, `figures_final.py` | `run_grid.py --regime rfc` / `rfcdense` |
-| Ablation | `grid_abl_sparse.parquet`, `grid_abl_dense.parquet` | `expansion_analysis.py` | `run_grid.py --regime abl_sparse --seeds 20` / `abl_dense` |
-| Threshold sensitivity | `grid_sens_sparse.parquet`, `grid_sens_dense.parquet` | `expansion_analysis.py`, `fig_sensitivity.py` | `run_grid.py --regime sens_sparse` / `sens_dense` |
+| Main results, attacks, insider fraction, robustness (faithful observation model) | `grid_ru_sparse.parquet`, `grid_ru_dense.parquet` | `main_numbers.py`, `ru_analysis.py`, `figures_final.py` | `run_grid.py --regime ru_sparse` / `ru_dense` |
+| Ablation (faithful model) | `grid_abl_ru_sparse.parquet`, `grid_abl_ru_dense.parquet` | `expansion_analysis.py` | `run_grid.py --regime abl_ru_sparse --seeds 20` / `abl_ru_dense` |
+| Threshold sensitivity (faithful model) | `grid_sens_ru_sparse.parquet`, `grid_sens_ru_dense.parquet` | `expansion_analysis.py`, `fig_sensitivity.py` | `run_grid.py --regime sens_ru_sparse` / `sens_ru_dense` |
+| Lost and stale reports (extra RU loss, bursts, TTL, window, persistence) | `grid_loss_sparse.parquet`, `grid_loss_dense.parquet` | `loss_frame_analysis.py` | `run_grid.py --regime loss_sparse` / `loss_dense` |
+| Coordinated framing (A15) vs. collusion bound | `grid_frame_sparse.parquet`, `grid_frame_dense.parquet` | `loss_frame_analysis.py` | `run_grid.py --regime frame_sparse` / `frame_dense` |
+| Blame rule: greedy cover (v1.0) vs. threshold rule (idealised model) | `grid_blame_*.parquet`, `v1_greedy/grid_rfc*.parquet` | `blame_analysis.py` | `run_grid.py --regime blame_sparse` / `blame_dense` |
+| One-sided claims: claimant vs. edge rule (idealised model) | `grid_onesided_*.parquet` | `onesided_analysis.py` | `run_grid.py --regime onesided_sparse` / `onesided_dense` |
+| Idealised observation model (as in v1.0, threshold rule) | `grid_rfc.parquet`, `grid_rfcdense.parquet`, `grid_abl_*`, `grid_sens_*`, `grid_net_*` | `GT_OBS=ideal` with the scripts above | `run_grid.py --regime rfc` / `rfcdense` / ... |
 | Network structure (RGG vs Erdos-Renyi, auditability, churn) | `netsci_structure.csv` | `netsci_structure.py` | same script |
-| Betweenness capture and targeted placement | `grid_net_sparse.parquet`, `grid_net_dense.parquet` | `fig_netsci.py` | `run_grid.py --regime net_sparse --seeds 20` / `net_dense` |
-| ns-3 lie attacks | `ns3_lies.csv`, `ns3_lies_f20.csv` | `ns3_lies_analysis.py` | `ns3/geo_campaign5.sh` |
+| Betweenness capture and targeted placement (faithful model) | `grid_net_ru_sparse.parquet`, `grid_net_ru_dense.parquet` | `netsci_capture.py`, `fig_netsci.py` | `run_grid.py --regime net_ru_sparse --seeds 20` / `net_ru_dense` |
+| ns-3 lie attacks (idealised RU delivery) | `ns3_lies.csv`, `ns3_lies_f20.csv` | `ns3_lies_analysis.py` | `ns3/geo_campaign5.sh` |
+| ns-3 lie attacks, RUs on HELLO frames (`--ruModel=1`), TESLA-wait ablation, 20% extra RU loss | `ns3_ru*.csv` | `ns3_ru_analysis.py` | `ns3/geo_campaign6_ru.sh` |
 | PLOS ONE figure files (Fig1-6.tif: Arial, 8-12 pt, 300 dpi, LZW) | as above | `plos_figs.py` | - |
 | ns-3 network topology (appendix) | `ns3_topo_shrink_*_s3.csv` | `fig_ns3_topology.py shrink 3 [--paper]` | `ns3/geo_topo.sh shrink 3` |
 | Supplementary ns-3 link-spoofing campaign | `ns3_rfc*.csv` | `ns3_rfc_analysis.py` | `ns3/geo_campaign4.sh` |
@@ -118,6 +124,15 @@ that the patch applied to the `ns-3.48` tag reproduces the patched sources byte 
 
 ## Changes
 
+- **v1.1.0** (revision after the PLOS ONE editorial assessment):
+  - order-independent threshold blame rule with collusion bound `coll_f` (default 2) replaces the greedy vertex
+    cover, which coordinated insiders could exploit (`Config.blame`, `tests/test_blame.py`);
+  - faithful observation model `obs="ru"` (`geotrust/obs.py`, `tests/test_obs.py`): RU loss and bursts,
+    two-way-ranging freshness, verifier views, exchange labels, persistence of one-sided claims (`persist`=6);
+  - coordinated framing attack A15 (`frame_k`) and victim-exclusion metric `fex_vic`;
+  - all paper campaigns re-run under the faithful model; ns-3 option `--ruModel=1` carries RUs on HELLO frames;
+  - C kernel updated to the threshold rule (`GT_COLL_F`), bit-exact with Python, QEMU timings re-measured.
+  The v1.0 campaigns are kept in `eval/results/v1_greedy/` and reproduce with `blame="greedy"`, `obs="ideal"`.
 - **v1.0.1**: legends of `fig_zhou_diag`, `fig_sensitivity` and `fig_netsci` moved off the data (figures regenerated); `scripts/plos_figs.py` and the PLOS ONE figure files in `eval/figures/plos/`; citation metadata completed. No change to code paths, data or results.
 - **v1.0.0**: first release.
 

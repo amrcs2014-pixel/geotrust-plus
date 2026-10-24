@@ -1,10 +1,14 @@
 """Threshold-sensitivity figure: delivery, honest exclusion and liar detection vs. tau_scale."""
+import os
 import numpy as np, pandas as pd, matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy import stats
 
-SRC = {"sparse": "eval/results/grid_sens_sparse.parquet", "dense": "eval/results/grid_sens_dense.parquet"}
+OBS = os.environ.get("GT_OBS", "ru")      # "ru": faithful observation model (default) | "ideal": v1 campaigns
+SRC = ({"sparse": "eval/results/grid_sens_ru_sparse.parquet", "dense": "eval/results/grid_sens_ru_dense.parquet"}
+       if OBS == "ru" else
+       {"sparse": "eval/results/grid_sens_sparse.parquet", "dense": "eval/results/grid_sens_dense.parquet"})
 fig, ax = plt.subplots(1, 3, figsize=(7.2, 2.6))
 for reg, path in SRC.items():
     d = pd.read_parquet(path)

@@ -21,6 +21,14 @@ ABL_OFAT = {"attack": ["A1", "A10b", "A14", "PHY"], "att_frac": [0.2]}
 SENS_METHODS = ("OLSR", "OLSR-W", "OLSR-G")
 NET_METHODS = ("OLSR", "TOPO-OLSR", "OLSR-W", "OLSR-G")
 NET_OFAT = {"att_place": ["degree", "betweenness"]}
+BLAME_OFAT = {"blame": ["greedy"], "coll_f": [2, 3],
+              "attack": ["A1", "A2", "A9", "A10a", "A10b", "A12", "A13", "A14", "PHY"]}
+ONESIDED_OFAT = {"attack": ["A1", "A2", "A9", "A10a", "A10b", "A12", "A13", "A14", "PHY"], "att_frac": [0.2]}
+GEO_OFAT = dict(ONESIDED_OFAT, att_frac=[0.0, 0.2], n_obst=[8], speed=[2.0])
+# faithful observation model (obs="ru"): RU loss, freshness and persistence; coordinated framing (A15)
+LOSS_OFAT = {"ru_loss": [0.1, 0.2, 0.3], "ru_burst": [4.0], "persist": [3, 9], "fresh_w": [1, 4],
+             "claim_ttl": [4]}
+FRAME_OFAT = {"frame_k": [1, 2, 4], "coll_f": [1, 3]}
 SENS_OFAT = {"tau_scale": [0.5, 0.75, 1.5, 2.0, 4.0], "wd_z": [2.5, 4.5]}
 RFC_DENSE_OFAT = {"attack": ["A1", "A2", "A9", "A10a", "A10b", "A12", "A13", "A14", "PHY"], "att_frac": [0.0, 0.05, 0.2]}
 OFAT = {
@@ -39,6 +47,24 @@ def configs(regime="default"):
                   "abl_sparse": (ZHOU_MAIN, ABL_OFAT), "abl_dense": (MAIN.with_(qmin="all"), ABL_OFAT),
                   "sens_sparse": (ZHOU_MAIN, SENS_OFAT), "sens_dense": (MAIN.with_(qmin="all"), SENS_OFAT),
                   "net_sparse": (ZHOU_MAIN, NET_OFAT), "net_dense": (MAIN.with_(qmin="all"), NET_OFAT),
+                  "blame_sparse": (ZHOU_MAIN.with_(coll_f=1), BLAME_OFAT),
+                  "blame_dense": (MAIN.with_(qmin="all", coll_f=1), BLAME_OFAT),
+                  "onesided_sparse": (ZHOU_MAIN.with_(one_sided="edge"), ONESIDED_OFAT),
+                  "onesided_dense": (MAIN.with_(qmin="all", one_sided="edge"), ONESIDED_OFAT),
+                  "geo_sparse": (ZHOU_MAIN.with_(one_sided="geometry"), GEO_OFAT),
+                  "geo_dense": (MAIN.with_(qmin="all", one_sided="geometry"), GEO_OFAT),
+                  "ru_sparse": (ZHOU_MAIN.with_(obs="ru"), ZHOU_OFAT),
+                  "ru_dense": (MAIN.with_(qmin="all", obs="ru"), RFC_DENSE_OFAT),
+                  "loss_sparse": (ZHOU_MAIN.with_(obs="ru"), LOSS_OFAT),
+                  "loss_dense": (MAIN.with_(qmin="all", obs="ru"), LOSS_OFAT),
+                  "frame_sparse": (ZHOU_MAIN.with_(obs="ru", attack="A15", att_frac=0.2), FRAME_OFAT),
+                  "frame_dense": (MAIN.with_(qmin="all", obs="ru", attack="A15", att_frac=0.2), FRAME_OFAT),
+                  "abl_ru_sparse": (ZHOU_MAIN.with_(obs="ru"), ABL_OFAT),
+                  "abl_ru_dense": (MAIN.with_(qmin="all", obs="ru"), ABL_OFAT),
+                  "sens_ru_sparse": (ZHOU_MAIN.with_(obs="ru"), SENS_OFAT),
+                  "sens_ru_dense": (MAIN.with_(qmin="all", obs="ru"), SENS_OFAT),
+                  "net_ru_sparse": (ZHOU_MAIN.with_(obs="ru"), NET_OFAT),
+                  "net_ru_dense": (MAIN.with_(qmin="all", obs="ru"), NET_OFAT),
                   }.get(regime, (MAIN, OFAT))
     out = [("main", None, main)]
     for k, vals in ofat.items():
@@ -87,7 +113,11 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="eval/results/grid.parquet")
     ap.add_argument("--regime", default="default",
                     choices=["default", "zhou", "rfc", "rfcdense", "abl_sparse", "abl_dense", "sens_sparse", "sens_dense",
-                             "net_sparse", "net_dense"])
+                             "net_sparse", "net_dense", "blame_sparse", "blame_dense",
+                             "onesided_sparse", "onesided_dense",
+                             "geo_sparse", "geo_dense", "ru_sparse", "ru_dense", "loss_sparse", "loss_dense",
+                             "frame_sparse", "frame_dense", "abl_ru_sparse", "abl_ru_dense", "sens_ru_sparse",
+                             "sens_ru_dense", "net_ru_sparse", "net_ru_dense"])
     ap.add_argument("--n200", choices=["include", "skip", "only"], default="include",
                     help="N=200 runs need ~2.3 GB each: run them separately with few workers")
     a = ap.parse_args()
@@ -105,9 +135,9 @@ if __name__ == "__main__":
             json.dump(db, open(CALIB_FILE, "w"), indent=1)          # checkpoint every calibration
             print(f"[calib] {k} {json.dumps({x: round(y, 3) for x, y in tau.items()})}", flush=True)
     # N=200 is a scaling check: 10 seeds; everything else a.seeds
-    methods = (ABL_METHODS if a.regime.startswith("abl") else SENS_METHODS if a.regime.startswith("sens")
-               else NET_METHODS if a.regime.startswith("net")
-               else RFC_METHODS if a.regime.startswith("rfc") else METHODS)
+    methods = (ABL_METHODS if a.regime.startswith("abl") else SENS_METHODS if a.regime.startswith(("sens", "blame", "onesided", "geo"))
+               else NET_METHODS if a.regime.startswith(("net", "loss", "frame"))
+               else RFC_METHODS if a.regime.startswith(("rfc", "ru_")) else METHODS)
     jobs = [(f, l, c.with_(seed=s), db[c.key()], parts, methods) for f, l, c in cfgs
             for s in range(10 if (f == "n" and l == 200) else a.seeds)]
     os.makedirs(parts, exist_ok=True)

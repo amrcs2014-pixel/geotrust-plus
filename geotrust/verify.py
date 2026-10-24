@@ -121,8 +121,12 @@ class Verifier:
         c = cfg
         self.sig = float(np.sqrt(c.sigma ** 2 + c.sigma_ind ** 2 + (c.speed * c.T) ** 2 / 12))
 
-    def stats(self, own, CD, CP, CDprev, verifiers, rng):
+    def stats(self, own, CD, CP, CDprev, verifiers, rng, obs=None):
         """own: verifier's own (gated) distances (n,n).  CD/CP: claims as seen by the verifiers.
+        obs (faithful observation model, one verifier per call): dict with
+          known  (n,) bool    - the verifier holds a usable RU of v (otherwise v's claims are unknown, not evidence)
+          CR     (n,n) int    - exchange label of each claim; own_r (n,) labels of the verifier's own distances
+          streak (n,n) int    - consecutive one-sided periods [claimant, partner] at this verifier; persist (int)
         Returns dict {(i,v): {test: value}} for every verifier i and neighbour v."""
         n = CD.shape[0]
         has = ~np.isnan(CD)
@@ -141,14 +145,17 @@ class Verifier:
                 # R: reciprocity edges (blame is assigned later on the disagreement graph)
                 # a one-sided link claim (only one end lists the other) is a disagreement too
                 el = edges.setdefault(i, [])
-                el.append((v, i, abs(CD[v, i] - own[i, v]) if has[v, i] else np.inf, None))
-                for u in G1[G1 > v]:
+                if obs is not None:
+                    self._edges_obs(i, v, G1, own, CD, has, obs, el)
+                else:
+                    el.append((v, i, abs(CD[v, i] - own[i, v]) if has[v, i] else np.inf, None))
+                for u in (G1[G1 > v] if obs is None else ()):
                     if has[v, u] and has[u, v]:
                         el.append((v, u, abs(CD[v, u] - CD[u, v]), None))
-                    elif has[v, u]:
-                        el.append((v, u, np.inf, (v, CD[v, u])))     # (claimant, claimed distance)
+                    elif has[v, u]:      # (claimant, claimed distance, verifier's own triangle bounds)
+                        el.append((v, u, np.inf, (v, CD[v, u], abs(own[i, v] - own[i, u]), own[i, v] + own[i, u])))
                     elif has[u, v]:
-                        el.append((v, u, np.inf, (u, CD[u, v])))
+                        el.append((v, u, np.inf, (u, CD[u, v], abs(own[i, v] - own[i, u]), own[i, v] + own[i, u])))
                 # P: one-sided PLR residual (claimed link better than its distance implies);
                 #    used to calibrate the PLR clamp, not for exclusion
                 st["P"] = np.nanmax(plr(CD[v, cl]) - CP[v, cl]) if cl.size else np.nan
@@ -156,8 +163,8 @@ class Verifier:
                 both = cl[~np.isnan(CDprev[v, cl])] if CDprev is not None else []
                 st["K"] = np.max(CDprev[v, both] - CD[v, both]) if len(both) else np.nan
                 out[(i, v)] = st
-                # CM tuples for two-hop claims
-                for u in cl[~inG1[cl] & (cl != i)]:
+                # CM tuples for two-hop claims (not built under the faithful observation model)
+                for u in (cl[~inG1[cl] & (cl != i)] if obs is None else ()):
                     anc = G1[(G1 != v) & has[G1, u] & has[G1, v]]
                     if anc.size < k - 2:
                         continue
@@ -216,11 +223,47 @@ class Verifier:
             st["CM"] = cm.get(key, np.nan)
         return out, edges, self.claims
 
+    @staticmethod
+    def _edges_obs(i, v, G1, own, CD, has, obs, el):
+        """Disagreement edges of v at verifier i under the faithful observation model.
+        Distances are compared only between claims of the same exchange (equal labels); a missing or stale RU is
+        unknown; a one-sided claim is an edge only after obs['persist'] consecutive periods."""
+        known, CR, streak, m = obs["known"], obs["CR"], obs["streak"], obs["persist"]
+        CDp, CRp, own_cur, own_prev = obs["CDp"], obs["CRp"], obs["own_cur"], obs["own_prev"]
+        if not known[v]:
+            return
+        if has[v, i]:
+            # compare v's claim about i with i's own distance from the same exchange (current or previous claim)
+            for d_v, ov in ((CD[v, i], own_cur[v]), (CDp[v, i], own_prev[v])):
+                if np.isfinite(d_v) and np.isfinite(ov):
+                    el.append((v, i, abs(d_v - ov), None))
+                    break
+        elif streak[i, v] >= m:                     # v's usable RUs keep omitting the verifier's own fresh link
+            el.append((v, i, np.inf, None))
+        for u in G1[G1 > v]:
+            if not known[u]:
+                continue
+            if has[v, u] and has[u, v]:
+                # latest exchange reported by both ends (each end's current or previous claim)
+                best = None
+                for dv, lv in ((CD[v, u], CR[v, u]), (CDp[v, u], CRp[v, u])):
+                    for du, lu in ((CD[u, v], CR[u, v]), (CDp[u, v], CRp[u, v])):
+                        if lv == lu and lv >= 0 and np.isfinite(dv) and np.isfinite(du) and \
+                                (best is None or lv > best[0]):
+                            best = (lv, abs(dv - du))
+                if best is not None:
+                    el.append((v, u, best[1], None))
+            elif has[v, u] and streak[v, u] >= m:
+                el.append((v, u, np.inf, (v, CD[v, u], abs(own[i, v] - own[i, u]), own[i, v] + own[i, u])))
+            elif has[u, v] and streak[u, v] >= m:
+                el.append((v, u, np.inf, (u, CD[u, v], abs(own[i, v] - own[i, u]), own[i, v] + own[i, u])))
+
     def exclude(self, i, G1, out, edges, claims=None, use_cm=True, strong=None):
         """Boolean mask over G1: True = excluded.  Also returns the per-test flags.
         Reciprocity blame: a disagreement with the verifier's own measurement blames v;
-        other disagreements form a graph and nodes are blamed greedily (vertex cover) only while
-        they disagree with >= 2 partners, so an honest node next to one liar is not condemned."""
+        other disagreements form a graph; a node is blamed if it disagrees with >= coll_f+1 distinct partners
+        (cfg.blame="threshold"), so an honest node lied to by at most coll_f insiders is not condemned.
+        cfg.blame="greedy" keeps the v1.0 order-dependent vertex cover."""
         tau = self.tau
         flags = {k: np.zeros(len(G1), bool) for k in TESTS}
         pos = {v: j for j, v in enumerate(G1)}
@@ -230,20 +273,43 @@ class Verifier:
         E = [e for e in edges.get(i, []) if e[2] > tau["R"]]
         blamed = {v for v, u, r, _ in E if u == i}
         rest = [(v, u) for v, u, r, _ in E if u != i and v not in blamed and u not in blamed]
-        while rest:
-            deg = {}
+        if getattr(self.cfg, "blame", "threshold") == "greedy":
+            # v1.0 rule: greedy vertex cover while the max degree is >= 2.  Order-dependent: when two insiders
+            # lie to the same honest agents, a tie can remove an honest agent first and spare the insiders.
+            while rest:
+                deg = {}
+                for v, u in rest:
+                    deg[v] = deg.get(v, 0) + 1
+                    deg[u] = deg.get(u, 0) + 1
+                x = max(deg, key=deg.get)
+                if deg[x] < 2:
+                    break
+                blamed.add(x)
+                rest = [(v, u) for v, u in rest if x not in (v, u)]
+        else:
+            # threshold rule: blame every agent that disagrees with >= coll_f+1 distinct partners, on the graph
+            # as built (no sequential removal, hence independent of edge order).  If at most coll_f insiders lie to
+            # any honest agent, an honest agent reaches the threshold only through null-distribution false alarms.
+            k = getattr(self.cfg, "coll_f", 1) + 1
+            nb = {}
             for v, u in rest:
-                deg[v] = deg.get(v, 0) + 1
-                deg[u] = deg.get(u, 0) + 1
-            x = max(deg, key=deg.get)
-            if deg[x] < 2:
-                break
-            blamed.add(x)
-            rest = [(v, u) for v, u in rest if x not in (v, u)]
+                nb.setdefault(v, set()).add(u)
+                nb.setdefault(u, set()).add(v)
+            blamed |= {x for x, s in nb.items() if len(s) >= k}
         # a one-sided claim well inside the range (honest links there never lose reciprocity)
         # blames the claimant, unless the disagreement was already explained above
-        for v, u, r, one in E:
-            if one is not None and u != i and v not in blamed and u not in blamed                     and one[1] < (self.cfg.strong_frac if strong is None else strong) * self.cfg.rc + 1e-9:
+        rule = getattr(self.cfg, "one_sided", "claimant")
+        if rule == "geometry":
+            # blame the claimant only if the claim contradicts the verifier's OWN distances to both ends
+            # (triangle inequality, margin geo_k * sqrt(3) * sigma); a plausible claim stays an ordinary edge,
+            # so omission by the other end or a lost report cannot convict an honest claimant
+            m = getattr(self.cfg, "geo_k", 4.0) * np.sqrt(3.0) * self.sig
+            for v, u, r, one in E:
+                if one is not None and u != i and len(one) == 4 and np.isfinite(one[2]) and np.isfinite(one[3]) \
+                        and (one[1] < one[2] - m or one[1] > one[3] + m):
+                    blamed.add(one[0])
+        for v, u, r, one in E if rule == "claimant" else ():
+            if one is not None and u != i and v not in blamed and u not in blamed                    and one[1] < (self.cfg.strong_frac if strong is None else strong) * self.cfg.rc + 1e-9:
                 blamed.add(one[0])
         for v in blamed:
             if v in pos:

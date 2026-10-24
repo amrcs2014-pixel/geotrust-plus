@@ -3,9 +3,12 @@
 #include <stdint.h>
 
 #define GT_VMAXN 32   /* max authenticated one-hop neighbours */
+#ifndef GT_COLL_F
+#define GT_COLL_F 2   /* collusion bound f: a neighbour is blamed if it disagrees with >= f+1 partners */
+#endif
 
-/* Reciprocity disagreement graph with own-link blame, degree>=2 greedy vertex cover and one-sided
- * claimant blame.  D[v*n+u]: distance neighbour v reports for neighbour u (NAN = not listed);
+/* Reciprocity disagreement graph with own-link blame, the order-independent threshold rule
+ * (disagreement degree >= GT_COLL_F + 1) and one-sided claimant blame.  D[v*n+u]: distance neighbour v reports for neighbour u (NAN = not listed);
  * Dvi[v]: distance v reports for the verifier; own[v]: verifier's own (gated) distance to v.
  * strong_d = strong_frac * R_c.  Returns the number of blamed neighbours. */
 int gt_reciprocity(int n, const float *D, const float *Dvi, const float *own,

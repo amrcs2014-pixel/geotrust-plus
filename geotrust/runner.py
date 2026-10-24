@@ -5,6 +5,7 @@ import numpy as np
 from .config import Config
 from .sim import World, honest_claims
 from .attacks import Adversary
+from .obs import Observation
 from .verify import Verifier, TESTS
 from . import mpr
 
@@ -80,6 +81,17 @@ def topo_reject(CD, adj_i, i, v):
         return True
     for u in np.flatnonzero(~np.isnan(CD[v])):
         if adj_i[u] and np.isnan(CD[u, v]):
+            return True
+    return False
+
+
+def topo_reject_obs(CD, known, adj_i, i, v):
+    """topo_reject under the faithful observation model: without a usable RU of v there is nothing to accept;
+    claimed links are checked only against agents whose usable RU is known."""
+    if not known[v] or np.isnan(CD[v, i]):
+        return True
+    for u in np.flatnonzero(~np.isnan(CD[v])):
+        if adj_i[u] and known[u] and np.isnan(CD[u, v]):
             return True
     return False
 
@@ -237,6 +249,7 @@ def run(cfg: Config, tau=None, collect_null=False, methods=CORE, budget_s=None):
     world = World(cfg, rng)
     adv = Adversary(cfg, np.random.default_rng(cfg.seed + 10_000), world)
     ver = Verifier(cfg, tau)
+    ob = Observation(cfg, np.random.default_rng(cfg.seed + 50_000)) if getattr(cfg, "obs", "ideal") == "ru" else None
     vrng = np.random.default_rng(cfg.seed + 20_000)
     frng = np.random.default_rng(cfg.seed + 30_000)
     wrng = np.random.default_rng(cfg.seed + 40_000)
@@ -261,7 +274,33 @@ def run(cfg: Config, tau=None, collect_null=False, methods=CORE, budget_s=None):
         hist = hist[-3:]
         if budget_s and time.time() - t_start > budget_s:
             raise RunTimeout(f"round {r} after {time.time() - t_start:.0f}s")
-        if r < cfg.warmup or (r - cfg.warmup) % cfg.eval_every:
+        is_eval = not (r < cfg.warmup or (r - cfg.warmup) % cfg.eval_every)
+        if ob is not None:
+            # faithful observation model: RU loss, two-way-ranging freshness, labelled claims, verifier views
+            rx_ru, ok_ru = ob.links(D, adj, PT)
+            CDh, CRh, fresh = ob.measure(world.gate, meas, is_att, ok_ru)
+            CPh = world.fused(CDh)
+            adv.forge(world, D, adj, CDh, CPh)
+            # an RU without a neighbour's entry carries no timestamps for it: every link an insider leaves out of
+            # its RU (A14, but also A10a's fake position) prevents that neighbour from measuring it next period
+            ob.omit = {int(a): set(np.flatnonzero(adj[a] & np.isnan(CDh[a])).tolist()) for a in np.flatnonzero(is_att)}
+            lab = np.where((ob.t - ob.rtab.T) <= cfg.claim_ttl, ob.rtab.T, ob.t)    # partner's exchange label
+            CRh[is_att] = np.where(np.isnan(CDh[is_att]), -10 ** 6, lab[is_att])
+            ob.update_streaks(fresh & adj)
+            if is_eval:
+                own_ru = np.where(fresh & adj, ob.dtab, np.nan)        # own distance of the labelled exchange
+                VI = {int(i): ob.view(i) for i in honest_ids}
+                # own distance of the exchange each neighbour's claim about i refers to (current / previous claim)
+                OWN = {k: (ob.own_at(k, VI[k][2][:, k]), ob.own_at(k, VI[k][6][:, k])) for k in VI}
+                STK, RT = ob.streak.copy(), ob.rtab.copy()
+            ob.deliver(rx_ru, CDh, CPh, CRh)
+            if is_eval and any(SPEC[m].verify is True and SPEC[m].view == "gated" for m in methods):
+                # without TESLA an RU is usable in the period it is received (ablation OLSR-GnoAuth)
+                ob.hage -= 1
+                VIg = {int(i): ob.view(i) for i in honest_ids}
+                OWNg = {k: (ob.own_at(k, VIg[k][2][:, k]), ob.own_at(k, VIg[k][6][:, k])) for k in VIg}
+                ob.hage += 1
+        if not is_eval:
             continue
         views = {"raw": (CDr, CPr), "gated": (CDg, CPg), "lag": hist[-2][:2]}
         own = {"raw": meas, "gated": world.gate, "lag": hist[-2][2]}
@@ -270,6 +309,23 @@ def run(cfg: Config, tau=None, collect_null=False, methods=CORE, budget_s=None):
         need = {SPEC[m].view for m in methods if SPEC[m].verify is True}
         if collect_null:
             need = {"gated", "lag"}
+        if ob is not None:
+            need = set()                                 # per-verifier statistics are computed below
+
+            def obs_stats(i, gated=False):
+                V, O = (VIg, OWNg) if gated else (VI, OWN)
+                CDi, CPi, CRi, known, CDprev_i, CDp_i, CRp_i = V[int(i)]
+                o = dict(known=known, CR=CRi, streak=STK[i], persist=cfg.persist, CDp=CDp_i, CRp=CRp_i,
+                         own_cur=O[int(i)][0], own_prev=O[int(i)][1])
+                return ver.stats(own_ru, CDi, CPi, CDprev_i, [int(i)], vrng, obs=o)
+            if collect_null:
+                for i in honest_ids:
+                    out_i, edges_i, _ = obs_stats(i)
+                    for k in ("P", "K"):
+                        null.setdefault(k, []).append(np.array([st[k] for st in out_i.values()], np.float32))
+                    null.setdefault("R", []).append(np.array([e[2] for el in edges_i.values() for e in el
+                                                              if np.isfinite(e[2])], np.float32))
+                continue
         for vw in need:
             CD, CP = views[vw]
             prev = hist[-2][0] if vw == "gated" else (hist[-3][0] if len(hist) >= 3 else None)
@@ -331,22 +387,39 @@ def run(cfg: Config, tau=None, collect_null=False, methods=CORE, budget_s=None):
             U_true = np.flatnonzero(adj[hv].any(0) & ~adj[i] & ~is_att)
             U_true = U_true[U_true != i]
             Pt_iv = PT[i]
+            if ob is not None:
+                CDi, CPi, CRi, known_i = VI[int(i)][:4]
+                vs_i, vs_g, t0 = None, None, time.perf_counter()
             for m in methods:
                 sp = SPEC[m]
-                CD, CP = views[sp.view]
+                CD, CP = views[sp.view] if ob is None else (CDi, CPi)
                 mask = np.ones(G1.size, bool)
                 qx = np.zeros(G1.size, bool)                        # quarantine evidence (routing)
                 drops, evidence = set(), False
                 if sp.verify == "topo":
-                    mask = np.array([not topo_reject(CD, adj[i], i, v) for v in G1])
+                    mask = np.array([not (topo_reject(CD, adj[i], i, v) if ob is None
+                                          else topo_reject_obs(CD, known_i, adj[i], i, v)) for v in G1])
                     qx = ~mask
                 elif sp.verify:
                     CP = ver.clamp(CD, CP)
-                    exc, fl, drops = ver.exclude(i, G1, *vstats[sp.view], use_cm=sp.cm, strong=sp.strong)
+                    if ob is not None:
+                        if sp.view == "gated":
+                            if vs_g is None:
+                                vs_g = obs_stats(i, gated=True)
+                            exc, fl, drops = ver.exclude(i, G1, *vs_g, use_cm=False, strong=sp.strong)
+                        else:
+                            if vs_i is None:
+                                vs_i = obs_stats(i)
+                                vtime["lag"] = vtime.get("lag", 0.0) + time.perf_counter() - t0
+                            exc, fl, drops = ver.exclude(i, G1, *vs_i, use_cm=False, strong=sp.strong)
+                    else:
+                        exc, fl, drops = ver.exclude(i, G1, *vstats[sp.view], use_cm=sp.cm, strong=sp.strong)
                     qx = exc.copy()
                     evidence = bool(exc.any() or drops)
-                    if sp.view == "lag":
-                        pend = np.isnan(own["lag"][i, G1])          # TESLA: no authenticated RU yet
+                    if sp.view == "lag" or ob is not None:   # (faithful model: no usable RU of v yet)
+                        # TESLA: no authenticated RU yet (faithful model: no usable RU of v at i)
+                        pend = (np.isnan(own["lag"][i, G1]) if ob is None else
+                                (~VIg[int(i)][3][G1] if sp.view == "gated" else ~known_i[G1]))
                         if (~is_att[G1]).any():
                             put(m, "fex_auth", float(pend[~is_att[G1]].mean()))
                         exc = exc | pend
@@ -354,6 +427,9 @@ def run(cfg: Config, tau=None, collect_null=False, methods=CORE, budget_s=None):
                     hmask = ~is_att[G1]
                     if hmask.any():
                         put(m, "fex", float(exc[hmask].mean()))
+                        vic = np.array([int(v) in adv.victims for v in G1]) & hmask
+                        if vic.any():                       # A15: exclusion of the framing victims
+                            put(m, "fex_vic", float(exc[vic].mean()))
                         for k in TESTS:
                             put(m, "fex_" + k, float(fl[k][hmask].mean()))
                     if (~hmask).any():
@@ -441,7 +517,7 @@ def run(cfg: Config, tau=None, collect_null=False, methods=CORE, budget_s=None):
                        rt_ms=1e3 * mean("rt"), ratio_max=float(np.max(a["ratio"])) if a.get("ratio") else np.nan,
                        verify_s=vtime.get(SPEC[m].view, np.nan) if SPEC[m].verify is True else np.nan,
                        n_att=int(is_att.sum()))
-            for k in ("incl", "size", "cov", "qos", "fex", "tpr", "ratio", "cap", "fex_auth", "f_on",
+            for k in ("incl", "size", "cov", "qos", "fex", "fex_vic", "tpr", "ratio", "cap", "fex_auth", "f_on",
                       "fex_wd", "tpr_wd") + tuple(p + t for t in TESTS for p in ("fex_", "tpr_")):
                 row[k] = mean(k)
             rows.append(row)

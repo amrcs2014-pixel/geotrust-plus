@@ -125,6 +125,33 @@ struct World
     double exclH{0}, exclHDen{0}, exclA{0}, exclADen{0}, fOn{0}, fDen{0};
     std::string topo;                                           // snapshot CSV (empty = off)
     uint32_t topoK{0};                                          // interval of the snapshot
+    // ---- faithful ranging-report model (ruModel = 1): every RU rides on its sender's HELLO and is received only if
+    //      that frame is; distances need a two-way exchange; verifiers hold the last RU per neighbour (TESLA: usable
+    //      one period after reception, for fw periods); claims carry exchange labels; one-sided claims need persistence
+    uint32_t ruModel{0}, ttl{2}, fw{2}, persist{6}, collF{1};
+    double ruLoss{0.0};                                         // extra RU loss on top of the 802.11 frame losses
+    std::mt19937_64 rngRu;                                      // own stream: legacy streams stay paired
+    int per{0};                                                 // current period (Tick index)
+    struct Claim
+    {
+        double d;
+        int lab;
+    };
+    using RU = std::map<uint32_t, Claim>;
+    std::vector<std::vector<char>> rxNow, rxPrev;               // rx[u][w]: u received w's HELLO this / last period
+    std::vector<std::vector<int>> measK;                        // period of u's last completed exchange with v
+    std::vector<std::vector<double>> measD;                     // distance of that exchange
+    std::vector<std::vector<RU>> held, heldPrev;                // u's last two received RUs of w
+    std::vector<std::vector<int>> heldK, heldPrevK;             // periods in which u received held / heldPrev
+    std::vector<std::vector<std::array<int, 8>>> ownLab;        // ring of u's own exchanges with v: labels
+    std::vector<std::vector<std::array<double, 8>>> ownD;       //                                   distances
+    std::vector<std::vector<std::vector<uint16_t>>> streak;     // [u][claimant][partner] one-sided periods
+    std::vector<std::vector<char>> conv, pend;                  // verdicts of the current period
+    double exclHconv{0}, exclHpend{0};
+    double dbgOwnDist{0}, dbgOwnOmit{0}, dbgThresh{0}, dbgClaim{0}, dbgPend{0}, dbgCalls{0};   // honest victims
+    uint32_t noPend{0};                                        // 1 = ablation: no TESLA wait
+    uint32_t pendFirst{0};                                     // 1 = TESLA wait at first contact only (cached chain)
+    std::vector<std::vector<char>> everAuth;                   // u has verified an RU of w before
 
     bool Active() const { return Simulator::Now().GetSeconds() >= tOn * kInterval; }
 };
@@ -413,6 +440,341 @@ RangingConvicts(uint32_t u, uint32_t w)
     return bad >= 2;
 }
 
+// ======================================================================= faithful ranging-report model
+/** Content of w's RU now: its fresh table entries (distance, exchange label); insiders forge them. */
+double
+LiarClaim(uint32_t w, uint32_t v)
+{
+    std::normal_distribution<double> E(0.0, 0.01);
+    const double d = Dist(w, v), R = g->linkRange, e = E(g->rngRu);
+    if (g->attack == "shrink" && d >= 0.5 * R && d < 1.5 * R)
+    {
+        return 0.6 * d + e;
+    }
+    if ((g->attack == "fakelinks" || g->attack == "stealth") && g->fake[w].count(v))
+    {
+        return g->fake[w][v] + e;
+    }
+    if (g->attack == "wormhole" && g->partner[w] >= 0 && d >= R)
+    {
+        return Dist(uint32_t(g->partner[w]), v) + e;
+    }
+    if (g->attack == "claim" && d >= R)
+    {
+        return 0.5 * R + e;
+    }
+    return d + e;
+}
+
+/** Fake neighbours of insider w without creating new ones (the HELLO hook maintains them). */
+std::vector<uint32_t>
+CurrentFakes(uint32_t w)
+{
+    std::vector<uint32_t> out;
+    if (!IsLiar(w))
+    {
+        return out;
+    }
+    const double R = g->linkRange;
+    if (g->attack == "fakelinks" || g->attack == "stealth")
+    {
+        for (const auto& kv : g->fake[w])
+        {
+            out.push_back(kv.first);
+        }
+        return out;
+    }
+    for (uint32_t v = 0; v < g->n; v++)
+    {
+        double d = Dist(w, v);
+        bool fake = (g->attack == "claim" && v != w && d >= R) ||
+                    (g->attack == "shrink" && v != w && d >= R && d < 1.5 * R) ||
+                    (g->attack == "wormhole" && g->partner[w] >= 0 && v != w && int(v) != g->partner[w] &&
+                     Dist(uint32_t(g->partner[w]), v) < R && d >= R);
+        if (fake)
+        {
+            out.push_back(v);
+        }
+    }
+    return out;
+}
+
+World::RU
+ReportOf(uint32_t w)
+{
+    World::RU r;
+    const int k = g->per;
+    for (uint32_t v = 0; v < g->n; v++)
+    {
+        if (v != w && g->measK[w][v] >= k - int(g->ttl))
+        {
+            r[v] = {g->measD[w][v], g->measK[w][v]};
+        }
+    }
+    if (IsLiar(w))
+    {
+        for (auto& kv : r)
+        {
+            kv.second.d = LiarClaim(w, kv.first);                // e.g. shortened distances (A10b)
+        }
+        for (uint32_t v : CurrentFakes(w))                       // fake links, labelled like a fresh exchange
+        {
+            r[v] = {LiarClaim(w, v), k};
+        }
+    }
+    return r;
+}
+
+/** OLSR receive trace of agent u: a HELLO from w delivers w's RU (unless the extra RU loss removes it). */
+void
+OnOlsrRx(uint32_t u, const olsr::PacketHeader&, const olsr::MessageList& msgs)
+{
+    if (!g->ruModel)
+    {
+        return;
+    }
+    std::uniform_real_distribution<double> U(0.0, 1.0);
+    for (const auto& m : msgs)
+    {
+        if (m.GetMessageType() != olsr::MessageHeader::HELLO_MESSAGE)
+        {
+            continue;
+        }
+        uint32_t w = Idx(m.GetOriginatorAddress());
+        if (w >= g->n || w == u || (g->ruLoss > 0 && U(g->rngRu) < g->ruLoss))
+        {
+            continue;
+        }
+        g->rxNow[u][w] = 1;
+        g->heldPrev[u][w] = g->held[u][w];
+        g->heldPrevK[u][w] = g->heldK[u][w];
+        g->held[u][w] = ReportOf(w);
+        g->heldK[u][w] = g->per;
+    }
+}
+
+bool
+RuUsable(uint32_t u, uint32_t w)
+{
+    int h = g->heldK[u][w];
+    return h <= g->per - 1 && h >= g->per - 1 - int(g->fw);
+}
+
+/** TESLA wait: w was heard for the first time recently (in the current period) and its key is not disclosed yet.
+ *  Agents that u has not heard at all are not pending: without an RU there is no evidence about them. */
+bool
+RuPending(uint32_t u, uint32_t w)
+{
+    bool p = !g->noPend && g->heldK[u][w] == g->per && g->heldPrevK[u][w] < g->per - 1 - int(g->fw) &&
+             !(g->pendFirst && g->everAuth[u][w]);
+    if (!g->attacker[w])
+    {
+        g->dbgCalls += 1;
+        g->dbgPend += p;
+    }
+    return p;
+}
+
+/** Latest exchange reported by both u's held RUs of a (about b) and of b (about a): |difference| or -1. */
+double
+RuPairGap(uint32_t u, uint32_t a, uint32_t b)
+{
+    const World::RU* A[2] = {&g->held[u][a], &g->heldPrev[u][a]};
+    const World::RU* B[2] = {&g->held[u][b], &g->heldPrev[u][b]};
+    int best = -1;
+    double gap = -1.0;
+    for (auto* x : A)
+    {
+        auto ia = x->find(b);
+        if (ia == x->end())
+        {
+            continue;
+        }
+        for (auto* y : B)
+        {
+            auto ib = y->find(a);
+            if (ib != y->end() && ia->second.lab == ib->second.lab && ia->second.lab > best)
+            {
+                best = ia->second.lab;
+                gap = std::fabs(ia->second.d - ib->second.d);
+            }
+        }
+    }
+    return gap;
+}
+
+/** Start of period k: two-way exchanges of the last period, one-sided persistence and the verdict tables. */
+void
+RuPeriod(int k)
+{
+    const uint32_t n = g->n;
+    g->per = k;
+    std::normal_distribution<double> E(0.0, 0.01);
+    for (uint32_t u = 0; u < n; u++)
+    {
+        for (uint32_t v = 0; v < n; v++)
+        {
+            if (u != v && g->rxNow[u][v] && g->rxPrev[v][u] && Dist(u, v) < g->linkRange)
+            {
+                g->measK[u][v] = k;
+                g->measD[u][v] = Dist(u, v) + E(g->rngRu);
+                g->ownLab[u][v][k % 8] = k;
+                g->ownD[u][v][k % 8] = g->measD[u][v];
+            }
+        }
+    }
+    g->rxPrev = g->rxNow;
+    for (auto& row : g->rxNow)
+    {
+        std::fill(row.begin(), row.end(), 0);
+    }
+    const double tau = g->tauR;
+    for (uint32_t u = 0; u < n; u++)
+    {
+        if (g->attacker[u])
+        {
+            continue;
+        }
+        std::vector<char> use(n, 0), blamed(n, 0);
+        for (uint32_t w = 0; w < n; w++)
+        {
+            use[w] = (w != u && RuUsable(u, w));
+            g->pend[u][w] = !use[w];
+            if (use[w])
+            {
+                g->everAuth[u][w] = 1;                           // its key chain is verified from now on
+            }
+        }
+        // one-sided persistence: claimant c lists p, p's usable RU does not list c; the own link counts as u's claim
+        for (uint32_t c = 0; c < n; c++)
+        {
+            for (uint32_t p = 0; p < n; p++)
+            {
+                bool one = false;
+                if (c == u && p != u && use[p])
+                {
+                    one = g->measK[u][p] >= k - int(g->ttl) && !g->held[u][p].count(u);
+                }
+                else if (c != u && p != u && c != p && use[c] && use[p])
+                {
+                    one = g->held[u][c].count(p) && !g->held[u][p].count(c);
+                }
+                g->streak[u][c][p] = one ? uint16_t(g->streak[u][c][p] + 1) : uint16_t(0);
+            }
+        }
+        // own-link rule: v's claim about u against u's own distance of the same exchange; persistent omission
+        for (uint32_t v = 0; v < n; v++)
+        {
+            if (!use[v])
+            {
+                continue;
+            }
+            const World::RU* R2[2] = {&g->held[u][v], &g->heldPrev[u][v]};
+            bool listed = false;
+            for (auto* x : R2)
+            {
+                auto it = x->find(u);
+                if (it == x->end())
+                {
+                    continue;
+                }
+                listed = true;
+                int lab = it->second.lab;
+                if (lab >= 0 && g->ownLab[u][v][lab % 8] == lab)
+                {
+                    blamed[v] = std::fabs(it->second.d - g->ownD[u][v][lab % 8]) > tau;
+                    if (blamed[v] && !g->attacker[v])
+                    {
+                        g->dbgOwnDist += 1;
+                    }
+                    break;
+                }
+            }
+            if (!listed && g->streak[u][u][v] >= g->persist)
+            {
+                blamed[v] = 1;
+                if (!g->attacker[v])
+                {
+                    g->dbgOwnOmit += 1;
+                }
+            }
+        }
+        // disagreement graph among the other usable neighbours; threshold rule; persistent one-sided claimants
+        std::vector<std::set<uint32_t>> nb(n);
+        std::vector<uint32_t> claimant;
+        for (uint32_t a = 0; a < n; a++)
+        {
+            for (uint32_t b = a + 1; b < n; b++)
+            {
+                if (!use[a] || !use[b] || blamed[a] || blamed[b])
+                {
+                    continue;
+                }
+                double gap = RuPairGap(u, a, b);
+                bool edge = gap > tau;
+                for (auto cp : {std::make_pair(a, b), std::make_pair(b, a)})
+                {
+                    if (g->streak[u][cp.first][cp.second] >= g->persist)
+                    {
+                        edge = true;
+                        claimant.push_back(cp.first);
+                    }
+                }
+                if (edge)
+                {
+                    nb[a].insert(b);
+                    nb[b].insert(a);
+                }
+            }
+        }
+        for (uint32_t v = 0; v < n; v++)
+        {
+            if (nb[v].size() >= g->collF + 1 && !blamed[v])
+            {
+                blamed[v] = 1;
+                if (!g->attacker[v])
+                {
+                    g->dbgThresh += 1;
+                }
+            }
+        }
+        for (uint32_t c : claimant)
+        {
+            if (!blamed[c] && !g->attacker[c])
+            {
+                g->dbgClaim += 1;
+            }
+            blamed[c] = 1;
+        }
+        for (uint32_t v = 0; v < n; v++)
+        {
+            g->conv[u][v] = blamed[v];
+        }
+    }
+}
+
+/** Topology check on the held RUs: v must list u, and every usable partner must confirm v's claimed links. */
+bool
+RuTopoReject(uint32_t u, uint32_t w)
+{
+    if (!RuUsable(u, w))
+    {
+        return false;                                            // no RU of w: no evidence
+    }
+    if (g->streak[u][u][w] >= g->persist)
+    {
+        return true;                                             // w keeps omitting u although u measures w
+    }
+    for (uint32_t p = 0; p < g->n; p++)
+    {
+        if (p != u && g->streak[u][w][p] >= g->persist)
+        {
+            return true;                                         // a claimed link its partner keeps not confirming
+        }
+    }
+    return false;
+}
+
 bool
 Excluded(Ipv4Address me, Ipv4Address other)
 {
@@ -424,14 +786,30 @@ Excluded(Ipv4Address me, Ipv4Address other)
     const std::string& d = g->defense;
     if (d == "topo")
     {
-        return OneSidedVisible(u, w);                   // topological reciprocity only
+        return g->ruModel ? RuTopoReject(u, w) : OneSidedVisible(u, w);   // topological reciprocity only
     }
     bool wdFlag = g->flagged.count({u, w}) > 0;
     if (d == "geotrust")
     {
-        return wdFlag || RangingConvicts(u, w);
+        return wdFlag || (g->ruModel ? (g->conv[u][w] || RuPending(u, w)) : RangingConvicts(u, w));
     }
     return wdFlag;                                      // watchdog
+}
+
+/** Quarantine predicate for route computation: evidence only (the TESLA wait applies to relay selection). */
+bool
+Quarantined(Ipv4Address me, Ipv4Address other)
+{
+    if (!g->ruModel || g->defense != "geotrust")
+    {
+        return Excluded(me, other);
+    }
+    uint32_t u = Idx(me), w = Idx(other);
+    if (u >= g->n || w >= g->n || g->attacker[u])
+    {
+        return false;
+    }
+    return g->flagged.count({u, w}) > 0 || g->conv[u][w];
 }
 
 uint32_t
@@ -583,6 +961,10 @@ DumpTopology(uint32_t k)
 void
 Tick(uint32_t k)
 {
+    if (g->ruModel)
+    {
+        RuPeriod(int(k));
+    }
     if (!g->topo.empty() && k == g->topoK)
     {
         DumpTopology(k);
@@ -647,6 +1029,11 @@ Tick(uint32_t k)
                 {
                     g->exclH += ex;
                     g->exclHDen += 1;
+                    if (g->ruModel && g->defense == "geotrust")
+                    {
+                        g->exclHconv += g->conv[i][j];
+                        g->exclHpend += (ex && !g->conv[i][j]) ? 1 : 0;   // TESLA wait or watchdog
+                    }
                 }
             }
         }
@@ -696,14 +1083,39 @@ main(int argc, char* argv[])
     cmd.AddValue("summary", "summary CSV (appended)", summary);
     cmd.AddValue("topo", "topology snapshot CSV (empty = off)", w.topo);
     cmd.AddValue("topoK", "interval of the topology snapshot", w.topoK);
+    cmd.AddValue("ruModel", "1 = faithful ranging-report model (RUs on HELLO frames, labels, persistence)", w.ruModel);
+    cmd.AddValue("ruLoss", "extra RU loss rate on top of the 802.11 frame losses", w.ruLoss);
+    cmd.AddValue("ttl", "periods a distance stays in an agent's table without a new exchange", w.ttl);
+    cmd.AddValue("fw", "periods a received RU stays usable after the TESLA period", w.fw);
+    cmd.AddValue("persist", "periods a one-sided claim must persist to become evidence", w.persist);
+    cmd.AddValue("collF", "collusion bound f of the threshold rule (ruModel)", w.collF);
+    cmd.AddValue("noPend", "1 = no TESLA wait for newly heard neighbours (ablation)", w.noPend);
+    cmd.AddValue("pendFirst", "1 = TESLA wait at first contact only (verified chain element cached)", w.pendFirst);
     cmd.Parse(argc, argv);
 
     RngSeedManager::SetSeed(seed);
     RngSeedManager::SetRun(run);
     Config::SetDefault("ns3::WifiMac::FrameRetryLimit", UintegerValue(retries + 1));
     w.rng.seed(uint64_t(seed) * 7919 + run);
+    w.rngRu.seed(uint64_t(seed) * 104729 + run + 17);
     w.n = n;
     w.sentK.assign(w.T + 2, 0.0);
+    w.rxNow.assign(n, std::vector<char>(n, 0));
+    w.rxPrev = w.rxNow;
+    w.measK.assign(n, std::vector<int>(n, -1000));
+    w.measD.assign(n, std::vector<double>(n, 0.0));
+    w.held.assign(n, std::vector<World::RU>(n));
+    w.heldPrev = w.held;
+    w.heldK.assign(n, std::vector<int>(n, -1000));
+    w.heldPrevK = w.heldK;
+    std::array<int, 8> noLab;
+    noLab.fill(-1000);
+    w.ownLab.assign(n, std::vector<std::array<int, 8>>(n, noLab));
+    w.ownD.assign(n, std::vector<std::array<double, 8>>(n, std::array<double, 8>{}));
+    w.streak.assign(n, std::vector<std::vector<uint16_t>>(n, std::vector<uint16_t>(n, 0)));
+    w.conv.assign(n, std::vector<char>(n, 0));
+    w.pend.assign(n, std::vector<char>(n, 1));
+    w.everAuth.assign(n, std::vector<char>(n, 0));
     w.recvK.assign(w.T + 2, 0.0);
     if (!calib.empty())
     {
@@ -812,13 +1224,14 @@ main(int argc, char* argv[])
         w.rp.push_back(Ipv4RoutingHelper::GetRouting<olsr::RoutingProtocol>(
             nodes.Get(i)->GetObject<Ipv4>()->GetRoutingProtocol()));
         w.rp.back()->TraceConnectWithoutContext("Tx", MakeCallback(&OnOlsrTx));
+        w.rp.back()->TraceConnectWithoutContext("Rx", MakeBoundCallback(&OnOlsrRx, i));
     }
     olsr::RoutingProtocol::SetGrrPlrFunction(&GrrPlr);
     olsr::RoutingProtocol::SetHelloLiesFunction(&HelloLies);
     if (defended)
     {
         olsr::RoutingProtocol::SetGeoTrustFunctions(&Excluded, &RobustF);
-        olsr::RoutingProtocol::SetQuarantineFunction(&Excluded);
+        olsr::RoutingProtocol::SetQuarantineFunction(&Quarantined);
         olsr::RoutingProtocol::SetLinkCostFunction(&HopCost);
         olsr::RoutingProtocol::SetDataHooks(&WdSend, &WdForward);
     }
@@ -907,7 +1320,8 @@ main(int argc, char* argv[])
     {
         f << "run,seed,n,L,vmax,mpr,gamma,absT,attack,frac,forgeP,dropData,dropTc,defense,dstar,margin,sigmaR,attackers,"
              "pdr_pre,pdr_post,mpr_size,att_slot_share,sel_att_frac,tc_per_node_s_pre,tc_per_node_s_post,"
-             "viol_honest,viol_attacker,checks_honest,checks_attacker,mean_lie_gap,excl_honest,excl_attacker,f_on\n";
+             "viol_honest,viol_attacker,checks_honest,checks_attacker,mean_lie_gap,excl_honest,excl_attacker,f_on,"
+             "ru_model,ru_loss,coll_f,persist,excl_honest_conv,excl_honest_pend\n";
     }
     f << run << ',' << seed << ',' << n << ',' << L << ',' << vmax << ',' << mpr << ',' << gamma << ',' << absT << ',' << w.attack << ','
       << frac << ',' << w.forgeP << ',' << dropData << ',' << dropTc << ',' << w.defense << ',' << w.dstar << ','
@@ -917,10 +1331,15 @@ main(int argc, char* argv[])
       << w.tcTx / (n * secPost) << ',' << (w.chkH > 0 ? w.violH / w.chkH : 0.0) << ','
       << (w.chkA > 0 ? w.violA / w.chkA : 0.0) << ',' << w.chkH << ',' << w.chkA << ','
       << (w.lieCnt > 0 ? w.lieGap / w.lieCnt : 0.0) << ',' << (w.exclHDen > 0 ? w.exclH / w.exclHDen : 0.0) << ','
-      << (w.exclADen > 0 ? w.exclA / w.exclADen : 0.0) << ',' << (w.fDen > 0 ? w.fOn / w.fDen : 0.0) << '\n';
+      << (w.exclADen > 0 ? w.exclA / w.exclADen : 0.0) << ',' << (w.fDen > 0 ? w.fOn / w.fDen : 0.0) << ','
+      << w.ruModel << ',' << w.ruLoss << ',' << w.collF << ',' << w.persist << ','
+      << (w.exclHDen > 0 ? w.exclHconv / w.exclHDen : 0.0) << ',' << (w.exclHDen > 0 ? w.exclHpend / w.exclHDen : 0.0)
+      << '\n';
     std::cout << mpr << ' ' << w.attack << " def=" << w.defense << " n=" << n << " L=" << L << " pdr_pre=" << pdrPre
               << " pdr_post=" << pdrPost << " mpr=" << (w.mprCnt > 0 ? w.mprSum / w.mprCnt : 0.0)
               << " attShare=" << (w.allSlot > 0 ? w.attSlot / w.allSlot : 0.0) << " calibRows=" << w.calibRows
+              << " honestBlame[ownDist,ownOmit,thresh,claimant]=" << w.dbgOwnDist << ',' << w.dbgOwnOmit << ','
+              << w.dbgThresh << ',' << w.dbgClaim << " pendFrac=" << (w.dbgCalls > 0 ? w.dbgPend / w.dbgCalls : 0.0)
               << std::endl;
     return 0;
 }

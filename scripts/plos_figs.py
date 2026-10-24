@@ -3,8 +3,7 @@
 PLOS figure rules (journals.plos.org/plosone/s/figures): TIFF or EPS, 300-600 dpi, width 789-2250 px (2.63-7.5 in),
 height <= 2625 px, RGB, no alpha channel, LZW, <= 10 MB, text in Arial/Times/Symbol at 8-12 pt, no figure number or
 caption inside the image.  The original figure scripts are run unchanged; this wrapper sets the font, clamps every
-font size to [8, 12] pt and redirects their output to eval/figures/plos/src (the paper figures in eval/figures are kept);
-the TIFF files go to eval/figures/plos.
+font size to [8, 12] pt and redirects their output to paper/plos/fig_src (the paper figures in eval/figures are kept).
 Run from the project root:  python scripts/plos_figs.py
 """
 import os, runpy, sys
@@ -15,7 +14,7 @@ from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties
 from PIL import Image
 
-OUT = "eval/figures/plos/src"
+OUT = "paper/plos/fig_src"
 os.makedirs(OUT, exist_ok=True)
 plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["Arial"], "mathtext.fontset": "custom",
                      "mathtext.rm": "Arial", "mathtext.it": "Arial:italic", "mathtext.bf": "Arial:bold",
@@ -50,12 +49,12 @@ if __name__ == "__main__":
         sys.argv = [script]
         runpy.run_path(script, run_name="__main__")
         plt.close("all")
-    os.makedirs("eval/figures/plos", exist_ok=True)
+    os.makedirs("paper/plos/submission", exist_ok=True)
     for src, dst in PLOS.items():
         im = Image.open(os.path.join(OUT, src + ".png"))
         rgb = Image.new("RGB", im.size, "white")
         rgb.paste(im, mask=im.split()[3] if im.mode == "RGBA" else None)
-        out = f"eval/figures/plos/{dst}.tif"
+        out = f"paper/plos/submission/{dst}.tif"
         rgb.save(out, compression="tiff_lzw", dpi=(300, 300))
         w, h = rgb.size
         print(f"{dst}.tif <- {src}: {w}x{h} px = {w / 300:.2f}x{h / 300:.2f} in, "

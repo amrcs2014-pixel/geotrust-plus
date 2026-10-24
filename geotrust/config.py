@@ -36,13 +36,29 @@ class Config:
     wd_z: float = 3.5           # watchdog conviction threshold (one-sided z)
     tau_scale: float = 1.0      # sensitivity study: multiplies every calibrated verification threshold
     att_place: str = "random"   # insider placement: random | degree | betweenness (targeted, on the initial graph)
+    blame: str = "threshold"    # reciprocity blame: "threshold" (order-independent, degree >= coll_f+1) | "greedy" (v1.0 cover)
+    coll_f: int = 2             # collusion bound: insiders assumed to lie to any one honest neighbour (threshold rule)
+    one_sided: str = "claimant" # one-sided link claims: "claimant" (v1.0: blame the claimant) | "edge" (count as a
+                                # disagreement edge only; cannot be abused by omission or caused by a lost report) |
+                                # "geometry" (edge, plus claimant blame if the claim violates the triangle inequality
+                                # w.r.t. the verifier's own distances to both ends)
+    geo_k: float = 4.0          # margin of the geometry rule in units of sqrt(3)*sigma_total
+    obs: str = "ideal"          # observation model: "ideal" (v1.0: all claims complete and current at every verifier)
+                                # | "ru" (RU loss, two-way-ranging freshness, verifier views, labels; see geotrust/obs.py)
+    ru_loss: float = 0.0        # extra RU loss rate on top of the distance-dependent channel loss (obs="ru")
+    ru_burst: float = 1.0       # mean burst length of RU losses (1 = independent)
+    claim_ttl: int = 2          # periods a measured distance stays in an agent's table without a new exchange
+    fresh_w: int = 2            # periods a received RU stays usable at a verifier (after the TESLA period)
+    persist: int = 6            # consecutive periods a one-sided claim must persist to become evidence (2*(claim_ttl+1))
+    frame_k: int = 3            # A15 coordinated framing: insiders per group lying to one shared honest victim
     seed: int = 0
     device: str = "cuda:0"
 
     def key(self):
         """Signature used for the attack-free calibration of verification thresholds."""
         return (f"n{self.n}_rc{self.rc}_v{self.speed}_s{self.sigma}_d{self.mean_degree}_flat{int(self.flat)}"
-                + (f"_obst{self.n_obst}" if self.n_obst else ""))
+                + (f"_obst{self.n_obst}" if self.n_obst else "")
+                + (f"_ru{self.ru_loss}_b{self.ru_burst}_t{self.claim_ttl}_w{self.fresh_w}" if self.obs == "ru" else ""))
 
     def asdict(self):
         return asdict(self)

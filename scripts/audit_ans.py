@@ -81,7 +81,7 @@ for i in imgs:
 for pat, what in ((r"\\(clearpage|newpage|pagebreak|vspace|smallskip|bigskip)\b", "layout command"),
                   (r"\\footnote\{", "footnote"), (r"\\textcolor|\\color\{", "coloured text"),
                   (r"\b\d{1,3},\d{3}\b", "comma in a number"), (r"\\url\{|https?://", "URL in text")):
-    hits = [m.group(0) for m in re.finditer(pat, body[:body.index("\\bibliography")])]
+    hits = [m.group(0) for m in re.finditer(pat, body[:body.index("\\backmatter")])]  # links allowed in Declarations
     print(f"{what}: {len(hits)} {sorted(set(hits))[:6]}")
     if hits:
         issues.append(f"{what}: {len(hits)} occurrence(s)")

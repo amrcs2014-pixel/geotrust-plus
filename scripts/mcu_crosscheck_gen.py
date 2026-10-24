@@ -1,12 +1,13 @@
 """Generate random verifier neighbourhoods and the reciprocity convictions of the reference Python
 verifier (geotrust.verify.Verifier.stats + exclude, R rule only) for the C cross-check
 (embedded/crosscheck.c).  Writes embedded/crosscheck_cases.txt."""
+import os
 import numpy as np
 from geotrust.config import Config
 from geotrust.verify import Verifier
 
 rng = np.random.default_rng(2026)
-cfg = Config(device="cpu")
+cfg = Config(device="cpu", coll_f=int(os.environ.get("GT_COLL_F", Config.coll_f)))   # build C with -DGT_COLL_F=<same>
 TAU = {"R": 0.0428, "K": np.inf, "P": 1.0, "CM": np.inf}
 ver = Verifier(cfg, TAU, device="cpu")
 cases = []

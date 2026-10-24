@@ -53,7 +53,7 @@ Note that the binary uses semihosting and must run under a debugger; without one
 | Kernel | Content |
 |---|---|
 | `cmac8_229B` | 8-byte AES-CMAC over a 229-byte ranging unit (tiny-AES, table-less) |
-| `reciprocity_n{12,20,30}` | disagreement graph, own-link blame, degree ≥ 2 greedy vertex cover, one-sided claims (bit-exact with the Python verifier: `crosscheck.c`, 400 cases, 0 mismatches) |
+| `reciprocity_n{12,20,30}` | disagreement graph, own-link blame, order-independent threshold rule (degree ≥ GT_COLL_F+1, default f=2), one-sided claims (bit-exact with the Python verifier: `crosscheck.c`, 400 cases, 0 mismatches at f=1 and f=2) |
 | `kin_clamp_wd_n*` | kinematic test + loss clamp over all reported links + watchdog z-tests |
 | `round_total_n*` | one full interval: n CMAC verifications + all checks |
 | `rgrr_n20_k25_f0` | relay computation of the earlier draft (reference) |
@@ -65,7 +65,7 @@ are reported.
 
 `bash build_hw.sh --qemu` runs the same code on QEMU (`qemu_hw_test.txt`). At 168 MHz, with 20 neighbours, it takes:
 - CMAC over one 229-byte RU: 76.3 k instructions;
-- reciprocity graph: 6.3 k instructions (about 38 µs at CPI 1);
+- reciprocity graph: 4.4 k instructions (about 26 µs at CPI 1; 6.3 k with the greedy cover of v1.0);
 - kinematic test, clamp and watchdog: 34 k instructions;
 - whole interval: 1.57 M instructions, i.e. 9.3–14 ms per 100 ms at a CPI of 1.0–1.5.
 

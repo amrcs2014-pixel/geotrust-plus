@@ -29,28 +29,14 @@ int gt_reciprocity(int n, const float *D, const float *Dvi, const float *own,
                 ea[ne] = v; eb[ne] = u; eclaim[ne] = ha ? v : u; edist[ne] = ha ? a : b; ne++;
             }
         }
-    /* greedy vertex cover on edges whose endpoints are not yet blamed; only degree >= 2 convicts */
-    static uint8_t alive[MAXE];
+    /* threshold rule (order-independent): among edges whose endpoints are not blamed by the own-link rule,
+       blame every neighbour that disagrees with >= GT_COLL_F + 1 distinct partners (edges are unique per pair) */
     int deg[GT_VMAXN];
-    for (int e = 0; e < ne; e++) alive[e] = !blamed[ea[e]] && !blamed[eb[e]];
-    for (;;) {
-        for (int v = 0; v < n; v++) deg[v] = 0;
-        int any = 0;
-        for (int e = 0; e < ne; e++)
-            if (alive[e]) { deg[ea[e]]++; deg[eb[e]]++; any = 1; }
-        if (!any) break;
-        int mx = 0, x = -1;
-        for (int v = 0; v < n; v++) if (deg[v] > mx) mx = deg[v];
-        if (mx < 2) break;
-        /* ties: first node in edge order (Python's max() over an insertion-ordered dict) */
-        for (int e = 0; e < ne && x < 0; e++)
-            if (alive[e]) {
-                if (deg[ea[e]] == mx) x = ea[e];
-                else if (deg[eb[e]] == mx) x = eb[e];
-            }
-        blamed[x] = 1;
-        for (int e = 0; e < ne; e++) if (ea[e] == x || eb[e] == x) alive[e] = 0;
-    }
+    for (int v = 0; v < n; v++) deg[v] = 0;
+    for (int e = 0; e < ne; e++)
+        if (!blamed[ea[e]] && !blamed[eb[e]]) { deg[ea[e]]++; deg[eb[e]]++; }
+    for (int v = 0; v < n; v++)
+        if (deg[v] >= GT_COLL_F + 1) blamed[v] = 1;
     /* one-sided claims well inside the range blame the claimant unless already explained */
     for (int e = 0; e < ne; e++)
         if (eclaim[e] >= 0 && !blamed[ea[e]] && !blamed[eb[e]] && edist[e] < strong_d + 1e-9f)

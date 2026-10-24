@@ -19,7 +19,11 @@ from .config import ATTACK_TYPES
 #      reciprocity passes); every attacker claims every other attacker within 2.5 rc at 0.85 rc
 # A14 framing by omission: truthful, but omits its links to its 2 nearest honest neighbours so that their
 #      (true) claims become one-sided
-EXTRA_TYPES = ("A12", "A13", "A14")
+# A15 coordinated framing: insiders form groups of frame_k; in every period each group picks the honest agent
+#      adjacent to the most group members and every adjacent member reports its distance to it 50% too long
+#      (a disagreement edge at the victim; truthful otherwise).  With frame_k > coll_f the group violates the
+#      collusion bound of Proposition 2 and can frame the victim; with frame_k <= coll_f it cannot.
+EXTRA_TYPES = ("A12", "A13", "A14", "A15")
 from .sim import plr
 
 
@@ -57,8 +61,12 @@ class Adversary:
         for a in wh:
             if a not in self.partner:
                 self.types[a] = "A10b"
+        fr = [a for a in self.ids if self.types[a] == "A15"]
+        g = max(1, getattr(cfg, "frame_k", 3))
+        self.groups = [fr[j:j + g] for j in range(0, len(fr), g)]
         self.phy = cfg.attack in ("PHY", "all") and k > 0
         self.fake = {}          # A2: fixed fake claims per attacker {u: d}
+        self.victims = set()    # A15: honest agents targeted in the current period
 
     # ---------------------------------------------------------------- PHY layer
     def phy_hook(self, D):
@@ -85,6 +93,16 @@ class Adversary:
                     s[j, ii] += add
             return s
         return hook
+
+    def omissions(self, D, adj):
+        """A14 insiders and the honest neighbours they omit (2 nearest); used by the faithful observation model,
+        where omitting u from the RU also prevents u from completing the two-way exchange."""
+        out = {}
+        for a in self.ids:
+            if self.types[a] == "A14":
+                hn = np.flatnonzero(adj[a] & ~self.is_att)
+                out[int(a)] = set(int(u) for u in hn[np.argsort(D[a, hn])[:2]])
+        return out
 
     # ------------------------------------------------------------- RU forgery
     def forge(self, world, D, adj, CD, CP):
@@ -150,10 +168,24 @@ class Adversary:
                 for u in hn[np.argsort(D[a, hn])[:2]]:
                     CD[a, u] = np.nan
                     CP[a, u] = np.nan
+            elif t == "A15":
+                continue                                   # handled per group below
             elif t == "A10b":
                 lie = (D[a] >= rc / 2) & (D[a] < 1.5 * rc)
                 lie[a] = False
                 dl = 0.6 * D[a, lie] + rng.normal(0, c.sigma, lie.sum())
                 CD[a, lie] = dl
                 CP[a, lie] = plr(dl)
+        self.victims = set()
+        for grp in self.groups:                            # A15: coordinated lies to one shared honest victim
+            cand = np.flatnonzero(~self.is_att)
+            hits = adj[np.ix_(grp, cand)].sum(0)
+            if hits.size == 0 or hits.max() == 0:
+                continue
+            victim = cand[np.argmax(hits + 1e-3 * rng.random(cand.size))]
+            self.victims.add(int(victim))
+            for a in grp:
+                if adj[a, victim] and not np.isnan(CD[a, victim]):
+                    CD[a, victim] = 1.5 * CD[a, victim]
+                    CP[a, victim] = plr(CD[a, victim])
         return CD, CP
